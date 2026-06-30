@@ -41,6 +41,13 @@ func TestDockerEngineHappyPaths(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"Id":"img-2"}`))
 	})
+	mux.HandleFunc("/v1.43/images/img-ok", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[{"Untagged":"img-ok"}]`))
+	})
+	mux.HandleFunc("/v1.43/images/img-gone", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"message":"No such image"}`, http.StatusNotFound)
+	})
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -67,6 +74,12 @@ func TestDockerEngineHappyPaths(t *testing.T) {
 	}
 	if img, err := eng.commit(ctx, "cid-1", "veil-snap-x:latest"); err != nil || img != "img-2" {
 		t.Fatalf("commit: img=%q err=%v", img, err)
+	}
+	if err := eng.removeImage(ctx, "img-ok"); err != nil {
+		t.Fatalf("removeImage 200: %v", err)
+	}
+	if err := eng.removeImage(ctx, "img-gone"); err != nil {
+		t.Fatalf("removeImage must tolerate 404: %v", err)
 	}
 }
 

@@ -17,8 +17,8 @@ const dockerAPIVersion = "v1.43"
 // dockerEngine talks to the Docker Engine API over a unix socket using only the
 // standard library.
 type dockerEngine struct {
-	http *http.Client
-	root string // scheme+host, e.g. http://docker (real) or the httptest URL
+	httpc *http.Client
+	root  string // scheme+host, e.g. http://docker (real) or the httptest URL
 }
 
 var _ engine = (*dockerEngine)(nil)
@@ -40,13 +40,13 @@ func newDockerEngine(host string) (*dockerEngine, error) {
 			return d.DialContext(ctx, "unix", socket)
 		},
 	}
-	return &dockerEngine{http: &http.Client{Transport: tr}, root: "http://docker"}, nil
+	return &dockerEngine{httpc: &http.Client{Transport: tr}, root: "http://docker"}, nil
 }
 
 // newEngineWithClient injects an HTTP client + root URL (used by tests against
 // an httptest server, so the request/response contract is exercised offline).
 func newEngineWithClient(httpc *http.Client, root string) *dockerEngine {
-	return &dockerEngine{http: httpc, root: root}
+	return &dockerEngine{httpc: httpc, root: root}
 }
 
 func (e *dockerEngine) versioned(path string) string {
@@ -54,6 +54,9 @@ func (e *dockerEngine) versioned(path string) string {
 }
 
 // do issues a request to a versioned endpoint, JSON-encoding body if non-nil.
+// A transport-level failure means the daemon is unreachable, so it is wrapped
+// with ErrEngineUnavailable for every method (not just ping); callers may
+// therefore errors.Is(err, ErrEngineUnavailable) after any engine call.
 func (e *dockerEngine) do(ctx context.Context, method, path string, query url.Values, body any) (*http.Response, error) {
 	// Keep bodyReader a nil io.Reader interface when there is no body; passing a
 	// typed-nil *bytes.Reader would make NewRequest try to read it.
@@ -76,7 +79,7 @@ func (e *dockerEngine) do(ctx context.Context, method, path string, query url.Va
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := e.http.Do(req)
+	resp, err := e.httpc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrEngineUnavailable, err)
 	}
@@ -84,11 +87,14 @@ func (e *dockerEngine) do(ctx context.Context, method, path string, query url.Va
 }
 
 func decodeError(resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	var m struct {
 		Message string `json:"message"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&m)
-	return &engineError{status: resp.StatusCode, message: m.Message}
+	if err := json.Unmarshal(body, &m); err == nil && m.Message != "" {
+		return &engineError{status: resp.StatusCode, message: m.Message}
+	}
+	return &engineError{status: resp.StatusCode, message: strings.TrimSpace(string(body))}
 }
 
 func decodeID(resp *http.Response) (string, error) {
@@ -106,7 +112,7 @@ func (e *dockerEngine) ping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	resp, err := e.http.Do(req)
+	resp, err := e.httpc.Do(req)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrEngineUnavailable, err)
 	}
