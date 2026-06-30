@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/miki-przygoda/veil/internal/events"
@@ -34,6 +35,9 @@ func TestSelectSandboxContainerFallback(t *testing.T) {
 	case e := <-feed:
 		if e.Kind != events.KindSystem {
 			t.Errorf("fallback event kind = %s, want system", e.Kind)
+		}
+		if !strings.Contains(e.Detail, "container backend unavailable") {
+			t.Errorf("fallback event Detail = %q, want it to mention the cause", e.Detail)
 		}
 	default:
 		t.Error("no KindSystem fallback event published")

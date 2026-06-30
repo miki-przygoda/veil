@@ -79,15 +79,18 @@ func main() {
 
 	// Live observation feed. Blocks until shutdown.
 	server := viz.NewServer(":8080", bus, log)
-	if err := server.Run(ctx); err != nil {
-		log.Error("viz", "err", err)
-		os.Exit(1)
-	}
+	runErr := server.Run(ctx)
 
-	// Clean exit: tear the world down so we don't leak a container. The
-	// Create-time reconcile covers unclean exits where this never runs.
+	// Tear the world down on the way out — clean shutdown or viz failure alike —
+	// so we don't leak a container. The Create-time reconcile covers crashes
+	// where this never runs.
 	if err := box.Destroy(context.Background()); err != nil {
 		log.Warn("sandbox destroy on shutdown", "err", err)
+	}
+
+	if runErr != nil {
+		log.Error("viz", "err", runErr)
+		os.Exit(1)
 	}
 	log.Info("shutdown complete")
 }
