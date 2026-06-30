@@ -128,6 +128,37 @@ func (c *Container) Snapshot(ctx context.Context) error {
 	return nil
 }
 
-// TEMP — replaced in Tasks 5-6.
-func (c *Container) Reset(ctx context.Context) error    { return nil }
+func (c *Container) Reset(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// remove failed -> old container may still exist; world unchanged, default
+	// no-transition rule applies.
+	if err := c.eng.remove(ctx, c.containerID, true); err != nil {
+		return err
+	}
+	// Past here the old container is gone and cannot be un-removed. Any failure
+	// leaves no running world, so we must not keep reporting "running".
+	spec := c.cfg.buildSpec(c.id)
+	spec.Image = c.resetTarget
+	cid, err := c.eng.create(ctx, spec)
+	if err != nil {
+		c.containerID = ""
+		c.status = StatusFailed
+		c.emit("reset", c.status)
+		return fmt.Errorf("reset: recreate failed after remove: %w", err)
+	}
+	if err := c.eng.start(ctx, cid); err != nil {
+		c.containerID = cid
+		c.status = StatusFailed
+		c.emit("reset", c.status)
+		return fmt.Errorf("reset: start failed after recreate: %w", err)
+	}
+	c.containerID = cid
+	c.status = StatusRunning
+	c.emit("reset", c.status)
+	return nil
+}
+
+// TEMP — replaced in Task 6.
 func (c *Container) Destroy(ctx context.Context) error  { return nil }

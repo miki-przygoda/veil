@@ -263,3 +263,50 @@ func TestContainerSnapshot(t *testing.T) {
 		t.Errorf("last event = %+v, want snapshot", evs)
 	}
 }
+
+func TestContainerResetUsesBaseBeforeSnapshot(t *testing.T) {
+	fe := &fakeEngine{imagePresent: true, createID: "cid"}
+	c := newContainerWithEngine("w", events.NewBus(16), DefaultConfig(), fe)
+	mustCreateStart(t, c)
+
+	if err := c.Reset(context.Background()); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	var lastCreate createSpec
+	for _, cl := range fe.calls {
+		if cl.op == "create" {
+			lastCreate = cl.spec
+		}
+	}
+	if lastCreate.Image != DefaultConfig().Image {
+		t.Errorf("reset create image = %q, want base %q", lastCreate.Image, DefaultConfig().Image)
+	}
+	if c.Status() != StatusRunning {
+		t.Errorf("status = %s, want running", c.Status())
+	}
+}
+
+func TestContainerResetPartialFailure(t *testing.T) {
+	bus := events.NewBus(16)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+
+	fe := &fakeEngine{imagePresent: true, createID: "cid"}
+	c := newContainerWithEngine("w", bus, DefaultConfig(), fe)
+	mustCreateStart(t, c)
+	_ = drain(feed) // discard create/start events
+
+	// remove ok, but recreate fails: the world is gone, so we must report
+	// StatusFailed (not a healthy "running" lie) and emit a loud event.
+	fe.createErr = fmt.Errorf("daemon boom")
+	if err := c.Reset(context.Background()); err == nil {
+		t.Fatal("Reset: want error")
+	}
+	if c.Status() != StatusFailed {
+		t.Errorf("status = %s, want failed", c.Status())
+	}
+	evs := drain(feed)
+	if len(evs) == 0 || evs[len(evs)-1].Detail != "status=failed" {
+		t.Errorf("expected a loud failed event, got %+v", evs)
+	}
+}

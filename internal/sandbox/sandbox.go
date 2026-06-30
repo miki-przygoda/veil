@@ -17,6 +17,9 @@ const (
 	StatusRunning   Status = "running"
 	StatusStopped   Status = "stopped"
 	StatusDestroyed Status = "destroyed"
+	// StatusFailed marks a world left inconsistent by a non-atomic Reset whose
+	// recreate failed after the old container was already removed.
+	StatusFailed Status = "failed"
 )
 
 // Sandbox is the contained world.
