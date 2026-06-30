@@ -223,3 +223,43 @@ func TestContainerStartErrorNoTransition(t *testing.T) {
 		t.Errorf("status = %s, want created (unchanged on failure)", c.Status())
 	}
 }
+
+func TestContainerSnapshot(t *testing.T) {
+	bus := events.NewBus(16)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+
+	fe := &fakeEngine{imagePresent: true, createID: "cid", commitID: "img-1"}
+	c := newContainerWithEngine("w", bus, DefaultConfig(), fe)
+	mustCreateStart(t, c)
+
+	if err := c.Snapshot(context.Background()); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if c.snapImage != "img-1" || c.resetTarget != "img-1" {
+		t.Errorf("snapImage=%q resetTarget=%q, want img-1", c.snapImage, c.resetTarget)
+	}
+
+	// Second snapshot supersedes and removes the prior image (by id, not tag).
+	fe.commitID = "img-2"
+	if err := c.Snapshot(context.Background()); err != nil {
+		t.Fatalf("Snapshot 2: %v", err)
+	}
+	if c.resetTarget != "img-2" {
+		t.Errorf("resetTarget=%q, want img-2", c.resetTarget)
+	}
+	var removed string
+	for _, cl := range fe.calls {
+		if cl.op == "removeImage" {
+			removed = cl.ref
+		}
+	}
+	if removed != "img-1" {
+		t.Errorf("removeImage ref = %q, want prior image img-1", removed)
+	}
+
+	evs := drain(feed)
+	if len(evs) == 0 || evs[len(evs)-1].Action != "snapshot" {
+		t.Errorf("last event = %+v, want snapshot", evs)
+	}
+}

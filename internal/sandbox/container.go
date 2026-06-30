@@ -107,7 +107,27 @@ func (c *Container) Start(ctx context.Context) error {
 	return nil
 }
 
-// TEMP — replaced in Tasks 4-6.
-func (c *Container) Snapshot(ctx context.Context) error { return nil }
+func (c *Container) Snapshot(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	ref := "veil-snap-" + c.id + ":latest"
+	imageID, err := c.eng.commit(ctx, c.containerID, ref)
+	if err != nil {
+		return err
+	}
+	prior := c.snapImage
+	c.snapImage = imageID
+	c.resetTarget = imageID
+	if prior != "" {
+		// Best-effort: the new snapshot is valid; a leaked old image is GC-able
+		// (it is labelled). Don't report Snapshot failure for a cleanup miss.
+		_ = c.eng.removeImage(ctx, prior)
+	}
+	c.emit("snapshot", c.status)
+	return nil
+}
+
+// TEMP — replaced in Tasks 5-6.
 func (c *Container) Reset(ctx context.Context) error    { return nil }
 func (c *Container) Destroy(ctx context.Context) error  { return nil }
