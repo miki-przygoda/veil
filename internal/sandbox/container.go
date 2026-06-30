@@ -41,7 +41,7 @@ func NewContainer(id string, bus *events.Bus, cfg Config) (*Container, error) {
 // newContainerWithEngine injects an engine (the real one, or a fake in tests).
 func newContainerWithEngine(id string, bus *events.Bus, cfg Config, eng engine) *Container {
 	if cfg.Image == "" {
-		cfg = DefaultConfig()
+		cfg.Image = DefaultConfig().Image
 	}
 	return &Container{id: id, bus: bus, eng: eng, cfg: cfg, status: StatusCreated}
 }
@@ -99,6 +99,9 @@ func (c *Container) Create(ctx context.Context) error {
 func (c *Container) Start(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.containerID == "" {
+		return fmt.Errorf("sandbox %s: Start before Create", c.id)
+	}
 	if err := c.eng.start(ctx, c.containerID); err != nil {
 		return err
 	}

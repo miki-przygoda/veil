@@ -82,11 +82,13 @@ func main() {
 	runErr := server.Run(ctx)
 
 	// Tear the world down on the way out — clean shutdown or viz failure alike —
-	// so we don't leak a container. The Create-time reconcile covers crashes
-	// where this never runs.
-	if err := box.Destroy(context.Background()); err != nil {
+	// so we don't leak a container. Bounded so a wedged daemon can't hang exit;
+	// the Create-time reconcile covers crashes where this never runs.
+	destroyCtx, cancelDestroy := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := box.Destroy(destroyCtx); err != nil {
 		log.Warn("sandbox destroy on shutdown", "err", err)
 	}
+	cancelDestroy()
 
 	if runErr != nil {
 		log.Error("viz", "err", runErr)

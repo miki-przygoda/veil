@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // dockerAPIVersion is the pinned Engine API version. Docker daemons reject
@@ -44,7 +45,7 @@ func newDockerEngine(host string) (*dockerEngine, error) {
 			return d.DialContext(ctx, "unix", socket)
 		},
 	}
-	return &dockerEngine{httpc: &http.Client{Transport: tr}, root: "http://docker"}, nil
+	return &dockerEngine{httpc: &http.Client{Transport: tr, Timeout: 30 * time.Second}, root: "http://docker"}, nil
 }
 
 // newEngineWithClient injects an HTTP client + root URL (used by tests against
