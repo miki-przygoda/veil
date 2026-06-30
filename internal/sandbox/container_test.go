@@ -144,9 +144,20 @@ func TestContainerCreateStart(t *testing.T) {
 	if evs[0].Kind != events.KindLifecycle || evs[0].Source != "sandbox/world-01" {
 		t.Errorf("event[0] = %+v, want lifecycle sandbox/world-01", evs[0])
 	}
+	if evs[0].Detail != "status=created" || evs[1].Detail != "status=running" {
+		t.Errorf("event details = %q,%q, want status=created,status=running", evs[0].Detail, evs[1].Detail)
+	}
 }
 
 func TestContainerCreateErrors(t *testing.T) {
+	// After any failed Create, no partial container state may be recorded.
+	assertNoCreateState := func(t *testing.T, c *Container) {
+		t.Helper()
+		if c.containerID != "" || c.resetTarget != "" {
+			t.Errorf("failed Create left partial state: containerID=%q resetTarget=%q", c.containerID, c.resetTarget)
+		}
+	}
+
 	t.Run("ping unavailable", func(t *testing.T) {
 		fe := &fakeEngine{pingErr: fmt.Errorf("%w: boom", ErrEngineUnavailable)}
 		c := newContainerWithEngine("w", events.NewBus(4), DefaultConfig(), fe)
@@ -157,6 +168,7 @@ func TestContainerCreateErrors(t *testing.T) {
 		if !slices.Equal(fe.ops(), []string{"ping"}) {
 			t.Errorf("ops = %v, want just [ping] (no container created)", fe.ops())
 		}
+		assertNoCreateState(t, c)
 	})
 	t.Run("image missing", func(t *testing.T) {
 		fe := &fakeEngine{imagePresent: false}
@@ -168,6 +180,33 @@ func TestContainerCreateErrors(t *testing.T) {
 		if !slices.Equal(fe.ops(), []string{"ping", "imageExists"}) {
 			t.Errorf("ops = %v, want [ping imageExists]", fe.ops())
 		}
+		assertNoCreateState(t, c)
+	})
+	t.Run("imageExists error", func(t *testing.T) {
+		boom := fmt.Errorf("daemon hiccup")
+		fe := &fakeEngine{imageErr: boom}
+		c := newContainerWithEngine("w", events.NewBus(4), DefaultConfig(), fe)
+		err := c.Create(context.Background())
+		if !errors.Is(err, boom) {
+			t.Fatalf("err = %v, want boom", err)
+		}
+		if !slices.Equal(fe.ops(), []string{"ping", "imageExists"}) {
+			t.Errorf("ops = %v, want [ping imageExists]", fe.ops())
+		}
+		assertNoCreateState(t, c)
+	})
+	t.Run("reconcile remove error", func(t *testing.T) {
+		boom := fmt.Errorf("remove failed")
+		fe := &fakeEngine{imagePresent: true, removeErr: boom}
+		c := newContainerWithEngine("w", events.NewBus(4), DefaultConfig(), fe)
+		err := c.Create(context.Background())
+		if !errors.Is(err, boom) {
+			t.Fatalf("err = %v, want boom", err)
+		}
+		if !slices.Equal(fe.ops(), []string{"ping", "imageExists", "remove"}) {
+			t.Errorf("ops = %v, want [ping imageExists remove]", fe.ops())
+		}
+		assertNoCreateState(t, c)
 	})
 }
 
