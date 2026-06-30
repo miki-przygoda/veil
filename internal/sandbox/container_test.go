@@ -35,7 +35,10 @@ type fakeCall struct {
 	spec createSpec
 }
 
-func (f *fakeEngine) ping(context.Context) error { f.calls = append(f.calls, fakeCall{op: "ping"}); return f.pingErr }
+func (f *fakeEngine) ping(context.Context) error {
+	f.calls = append(f.calls, fakeCall{op: "ping"})
+	return f.pingErr
+}
 func (f *fakeEngine) imageExists(_ context.Context, ref string) (bool, error) {
 	f.calls = append(f.calls, fakeCall{op: "imageExists", ref: ref})
 	return f.imagePresent, f.imageErr

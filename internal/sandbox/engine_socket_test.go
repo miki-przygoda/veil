@@ -10,42 +10,43 @@ import (
 
 func TestDockerEngineHappyPaths(t *testing.T) {
 	mux := http.NewServeMux()
+	vp := "/" + dockerAPIVersion // versioned-endpoint prefix, kept in sync with the client
 	mux.HandleFunc("/_ping", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	})
-	mux.HandleFunc("/v1.43/images/present:1/json", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc(vp+"/images/present:1/json", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"Id":"sha256:abc"}`))
 	})
-	mux.HandleFunc("/v1.43/images/missing:1/json", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc(vp+"/images/missing:1/json", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"message":"No such image"}`, http.StatusNotFound)
 	})
-	mux.HandleFunc("/v1.43/containers/create", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(vp+"/containers/create", func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("name"); got != "veil-x" {
 			t.Errorf("create ?name = %q, want veil-x", got)
 		}
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"Id":"cid-1"}`))
 	})
-	mux.HandleFunc("/v1.43/containers/cid-1/start", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc(vp+"/containers/cid-1/start", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/v1.43/containers/gone", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc(vp+"/containers/gone", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"message":"No such container"}`, http.StatusNotFound)
 	})
-	mux.HandleFunc("/v1.43/commit", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(vp+"/commit", func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("container"); got != "cid-1" {
 			t.Errorf("commit ?container = %q, want cid-1", got)
 		}
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"Id":"img-2"}`))
 	})
-	mux.HandleFunc("/v1.43/images/img-ok", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc(vp+"/images/img-ok", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`[{"Untagged":"img-ok"}]`))
 	})
-	mux.HandleFunc("/v1.43/images/img-gone", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc(vp+"/images/img-gone", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"message":"No such image"}`, http.StatusNotFound)
 	})
 

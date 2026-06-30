@@ -12,7 +12,11 @@ import (
 	"strings"
 )
 
-const dockerAPIVersion = "v1.43"
+// dockerAPIVersion is the pinned Engine API version. Docker daemons reject
+// versions below their minimum (Docker 29's minimum is 1.44), so this must be
+// >= the oldest daemon we target. Version negotiation via GET /version would be
+// more robust across very old/new daemons; see the design's future work.
+const dockerAPIVersion = "v1.44"
 
 // dockerEngine talks to the Docker Engine API over a unix socket using only the
 // standard library.
