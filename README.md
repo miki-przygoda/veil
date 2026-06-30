@@ -33,8 +33,19 @@ make run        # starts the daemon on http://localhost:8080
 ```
 
 Open the dashboard and watch synthetic residents and tapped traffic stream in.
-Right now the sandbox and tap are stubs — they prove the pipeline end to end
-before a real isolation backend is wired in.
+
+By default `veild` runs the **container** sandbox backend (needs a reachable
+Docker daemon and a local `alpine:3.20` image). If Docker is unavailable it logs
+a notice, emits a system event, and falls back to the stub. Pick a backend with
+`-backend`:
+
+```sh
+go run ./cmd/veild -backend=stub        # no Docker needed (pipeline only)
+go run ./cmd/veild -backend=container   # real hardened, no-network container
+```
+
+The tap is still a stub — it proves the observation pipeline end to end before
+real host-side capture is wired in.
 
 ```sh
 make build      # binaries -> bin/veild, bin/veil-agent
