@@ -160,5 +160,19 @@ func (c *Container) Reset(ctx context.Context) error {
 	return nil
 }
 
-// TEMP — replaced in Task 6.
-func (c *Container) Destroy(ctx context.Context) error  { return nil }
+func (c *Container) Destroy(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.eng.remove(ctx, c.containerID, true); err != nil {
+		return err
+	}
+	if c.snapImage != "" {
+		_ = c.eng.removeImage(ctx, c.snapImage) // best-effort
+		c.snapImage = ""
+	}
+	c.containerID = ""
+	c.status = StatusDestroyed
+	c.emit("destroy", c.status)
+	return nil
+}

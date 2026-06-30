@@ -337,3 +337,28 @@ func TestContainerResetStartFailure(t *testing.T) {
 		t.Errorf("expected a loud reset/status=failed event, got %+v", evs)
 	}
 }
+
+func TestContainerDestroy(t *testing.T) {
+	fe := &fakeEngine{imagePresent: true, createID: "cid", commitID: "img-1"}
+	c := newContainerWithEngine("w", events.NewBus(16), DefaultConfig(), fe)
+	mustCreateStart(t, c)
+	if err := c.Snapshot(context.Background()); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	if err := c.Destroy(context.Background()); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	if c.Status() != StatusDestroyed {
+		t.Errorf("status = %s, want destroyed", c.Status())
+	}
+	var removedImg bool
+	for _, cl := range fe.calls {
+		if cl.op == "removeImage" && cl.ref == "img-1" {
+			removedImg = true
+		}
+	}
+	if !removedImg {
+		t.Error("Destroy did not remove snapshot image img-1")
+	}
+}
