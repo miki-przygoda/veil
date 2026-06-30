@@ -27,11 +27,27 @@ func DefaultConfig() Config {
 
 // buildSpec turns a Config into the hardened container-create spec for a world.
 // Every isolation control is set here, host-side — nothing is enforced in-guest.
+// Zero-valued hardening fields fall back to safe defaults so a partially-filled
+// Config can never silently produce an uncapped container (Docker reads an
+// absent/zero Memory or PidsLimit as "unlimited").
 func (c Config) buildSpec(world string) createSpec {
+	def := DefaultConfig()
+	cmd := c.Cmd
+	if len(cmd) == 0 {
+		cmd = def.Cmd
+	}
+	mem := c.Memory
+	if mem <= 0 {
+		mem = def.Memory
+	}
+	pids := c.PidsLimit
+	if pids <= 0 {
+		pids = def.PidsLimit
+	}
 	return createSpec{
 		name:            "veil-" + world,
 		Image:           c.Image,
-		Cmd:             c.Cmd,
+		Cmd:             cmd,
 		Labels:          map[string]string{labelManaged: "true", labelWorld: world},
 		NetworkDisabled: true,
 		HostConfig: hostConfig{
@@ -39,8 +55,8 @@ func (c Config) buildSpec(world string) createSpec {
 			Tmpfs:          map[string]string{"/tmp": "", "/run": ""},
 			CapDrop:        []string{"ALL"},
 			SecurityOpt:    []string{"no-new-privileges:true"},
-			PidsLimit:      c.PidsLimit,
-			Memory:         c.Memory,
+			PidsLimit:      pids,
+			Memory:         mem,
 			NetworkMode:    "none",
 		},
 	}
