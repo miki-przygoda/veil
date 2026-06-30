@@ -306,7 +306,34 @@ func TestContainerResetPartialFailure(t *testing.T) {
 		t.Errorf("status = %s, want failed", c.Status())
 	}
 	evs := drain(feed)
-	if len(evs) == 0 || evs[len(evs)-1].Detail != "status=failed" {
-		t.Errorf("expected a loud failed event, got %+v", evs)
+	last := len(evs) - 1
+	if len(evs) == 0 || evs[last].Action != "reset" || evs[last].Detail != "status=failed" {
+		t.Errorf("expected a loud reset/status=failed event, got %+v", evs)
+	}
+}
+
+func TestContainerResetStartFailure(t *testing.T) {
+	bus := events.NewBus(16)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+
+	fe := &fakeEngine{imagePresent: true, createID: "cid"}
+	c := newContainerWithEngine("w", bus, DefaultConfig(), fe)
+	mustCreateStart(t, c)
+	_ = drain(feed) // discard create/start events
+
+	// remove ok, recreate ok, but start fails after recreate: the world is not
+	// running, so status must be StatusFailed (not a running lie), loud event.
+	fe.startErr = fmt.Errorf("start boom")
+	if err := c.Reset(context.Background()); err == nil {
+		t.Fatal("Reset: want error")
+	}
+	if c.Status() != StatusFailed {
+		t.Errorf("status = %s, want failed", c.Status())
+	}
+	evs := drain(feed)
+	last := len(evs) - 1
+	if len(evs) == 0 || evs[last].Action != "reset" || evs[last].Detail != "status=failed" {
+		t.Errorf("expected a loud reset/status=failed event, got %+v", evs)
 	}
 }
