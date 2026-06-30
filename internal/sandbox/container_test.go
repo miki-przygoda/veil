@@ -339,18 +339,26 @@ func TestContainerResetStartFailure(t *testing.T) {
 }
 
 func TestContainerDestroy(t *testing.T) {
+	bus := events.NewBus(16)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+
 	fe := &fakeEngine{imagePresent: true, createID: "cid", commitID: "img-1"}
-	c := newContainerWithEngine("w", events.NewBus(16), DefaultConfig(), fe)
+	c := newContainerWithEngine("w", bus, DefaultConfig(), fe)
 	mustCreateStart(t, c)
 	if err := c.Snapshot(context.Background()); err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
+	_ = drain(feed) // discard create/start/snapshot events
 
 	if err := c.Destroy(context.Background()); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
 	if c.Status() != StatusDestroyed {
 		t.Errorf("status = %s, want destroyed", c.Status())
+	}
+	if c.containerID != "" {
+		t.Errorf("containerID = %q, want cleared", c.containerID)
 	}
 	var removedImg bool
 	for _, cl := range fe.calls {
@@ -360,5 +368,9 @@ func TestContainerDestroy(t *testing.T) {
 	}
 	if !removedImg {
 		t.Error("Destroy did not remove snapshot image img-1")
+	}
+	evs := drain(feed)
+	if len(evs) != 1 || evs[0].Action != "destroy" || evs[0].Detail != "status=destroyed" {
+		t.Errorf("events = %+v, want one destroy/status=destroyed event", evs)
 	}
 }
