@@ -42,7 +42,7 @@ func TestParseQueryMalformed(t *testing.T) {
 	for _, bad := range [][]byte{
 		{},                          // empty
 		{0, 0, 0, 0, 0, 1},          // truncated header
-		append(append([]byte{}, good[:13]...), 0x40), // label length byte past end
+		append(append([]byte{}, good[:13]...), 0x40), // truncated: label body then no room for the next length byte
 		{0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0xc0, 0x0c}, // compression pointer in question
 	} {
 		if _, err := parseQuery(bad); err == nil {
@@ -66,12 +66,23 @@ func TestReplyA(t *testing.T) {
 	if binary.BigEndian.Uint16(reply[6:8]) != 1 {
 		t.Errorf("ANCOUNT = %d, want 1", binary.BigEndian.Uint16(reply[6:8]))
 	}
-	if reply[len(reply)-6] != 0xc0 || reply[len(reply)-5] != 0x0c {
-		// answer NAME pointer sits before TYPE/CLASS/TTL/RDLEN/RDATA... check the
-		// RDATA instead, which is the final 4 bytes:
+	nameOff := 12 + len(q.qsection)
+	if reply[nameOff] != 0xc0 || reply[nameOff+1] != 0x0c {
+		t.Errorf("answer NAME = %02x %02x, want c0 0c", reply[nameOff], reply[nameOff+1])
 	}
 	if got := net.IP(reply[len(reply)-4:]); !got.Equal(net.ParseIP("172.20.0.10")) {
 		t.Errorf("answer RDATA = %v, want 172.20.0.10", got)
+	}
+}
+
+func TestReplyANonIPv4Degrades(t *testing.T) {
+	q, _ := parseQuery(encodeQuery(1, "web.veil.local", dnsTypeA))
+	reply := replyA(q, net.ParseIP("::1"), true)
+	if reply[3]&0x0f != rcodeNXDomain {
+		t.Errorf("non-IPv4 ip: rcode = %d, want NXDOMAIN(%d)", reply[3]&0x0f, rcodeNXDomain)
+	}
+	if reply[2]&0x04 != 0 {
+		t.Error("degraded NXDOMAIN must not be authoritative")
 	}
 }
 

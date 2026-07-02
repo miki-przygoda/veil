@@ -16,7 +16,7 @@ const (
 	rcodeNXDomain uint8 = 3
 	rcodeRefused  uint8 = 5
 
-	maxName = 255
+	maxName = 254
 )
 
 var errMalformedQuery = errors.New("malformed dns query")
@@ -97,6 +97,7 @@ func header(q dnsQuery, aa bool, rcode uint8, ancount uint16) []byte {
 
 // replyA echoes the question and appends one A answer (NAME=0xC00C, TTL 30). If
 // ip is not IPv4 it degrades to NXDOMAIN. aa is the caller's authority claim.
+// A non-IPv4 ip always yields a non-authoritative NXDOMAIN regardless of aa.
 func replyA(q dnsQuery, ip net.IP, aa bool) []byte {
 	v4 := ip.To4()
 	if v4 == nil {
