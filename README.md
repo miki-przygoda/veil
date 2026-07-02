@@ -35,7 +35,7 @@ make run        # starts the daemon on http://localhost:8080
 Open the dashboard and watch synthetic residents and tapped traffic stream in.
 
 By default `veild` runs the **container** sandbox backend (needs a reachable
-Docker daemon and a local `alpine:3.20` image). 
+Docker daemon and the pinned `alpine:3.20@sha256:…` image it references (a fresh `docker pull alpine:3.20` that yields a newer digest will fail closed with a self-identifying error — pull the pinned digest or update `DefaultConfig`)).
 `-backend=container` (the default) REQUIRES a reachable Docker daemon and fails
 closed (veild exits) if it isn't — it never silently runs without containment.
 `-backend=stub` is the explicit, dev-only mode and provides **zero isolation**.

@@ -53,7 +53,7 @@ type HostConfig struct {
 	UsernsMode     string            `json:"UsernsMode,omitempty"`
 	CpuPeriod      int64             `json:"CpuPeriod,omitempty"`
 	CpuQuota       int64             `json:"CpuQuota,omitempty"`
-	Sysctls        map[string]string `json:"Sysctls,omitempty"`
+	Sysctls        map[string]string `json:"Sysctls,omitempty"` // reserved hook; buildSpec does not set it yet
 }
 
 // dockerAPIVersion is the pinned Engine API version. Docker daemons reject
