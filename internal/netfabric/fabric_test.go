@@ -27,6 +27,7 @@ func (f *fakeNet) CreateNetwork(_ context.Context, s docker.NetworkSpec) (string
 		f.byID = map[string]docker.Network{}
 	}
 	f.byID[id] = docker.Network{ID: id, Name: s.Name, Internal: s.Internal, Bridge: s.BridgeName}
+	f.byID[s.Name] = f.byID[id]
 	return id, nil
 }
 func (f *fakeNet) InspectNetwork(_ context.Context, id string) (docker.Network, error) {
@@ -99,5 +100,24 @@ func TestFabricEnsureError(t *testing.T) {
 	}
 	if len(fn.removed) != 0 {
 		t.Errorf("RemoveNetwork called after a failed Ensure")
+	}
+}
+
+func TestFabricEnsureReusesExisting(t *testing.T) {
+	fn := &fakeNet{createID: "net-1"}
+	f := NewFabric(fn, "veil-net")
+	if _, err := f.Ensure(context.Background()); err != nil {
+		t.Fatalf("first Ensure: %v", err)
+	}
+	// Second Ensure must REUSE the existing network — no second CreateNetwork.
+	n, err := f.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("second Ensure: %v", err)
+	}
+	if len(fn.created) != 1 {
+		t.Errorf("CreateNetwork called %d times, want 1 (2nd Ensure should reuse)", len(fn.created))
+	}
+	if n.Name != "veil-net" || !n.Internal {
+		t.Errorf("reused network = %+v", n)
 	}
 }
