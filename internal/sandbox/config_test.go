@@ -9,8 +9,8 @@ import (
 func TestBuildSpecHardening(t *testing.T) {
 	spec := DefaultConfig().buildSpec("world-01")
 
-	if spec.name != "veil-world-01" {
-		t.Errorf("name = %q, want veil-world-01", spec.name)
+	if spec.Name != "veil-world-01" {
+		t.Errorf("Name = %q, want veil-world-01", spec.Name)
 	}
 	if !spec.NetworkDisabled {
 		t.Error("NetworkDisabled = false, want true (invariants #1/#2)")
@@ -96,6 +96,21 @@ func TestBuildSpecJSONWireFormat(t *testing.T) {
 	}
 	if n, _ := hc["Memory"].(float64); n <= 0 {
 		t.Errorf("wire HostConfig.Memory = %v, want > 0", hc["Memory"])
+	}
+}
+
+func TestBuildSpecNetwork(t *testing.T) {
+	// Empty Network keeps the box isolated (today's default).
+	none := DefaultConfig().buildSpec("w")
+	if none.NetworkDisabled != true || none.HostConfig.NetworkMode != "none" {
+		t.Errorf("default: NetworkDisabled=%v NetworkMode=%q, want true/none", none.NetworkDisabled, none.HostConfig.NetworkMode)
+	}
+	// A named network joins it (no external egress on an internal net).
+	cfg := DefaultConfig()
+	cfg.Network = "veil-net"
+	joined := cfg.buildSpec("w")
+	if joined.NetworkDisabled != false || joined.HostConfig.NetworkMode != "veil-net" {
+		t.Errorf("joined: NetworkDisabled=%v NetworkMode=%q, want false/veil-net", joined.NetworkDisabled, joined.HostConfig.NetworkMode)
 	}
 }
 

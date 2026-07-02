@@ -41,11 +41,15 @@ a notice, emits a system event, and falls back to the stub. Pick a backend with
 
 ```sh
 go run ./cmd/veild -backend=stub        # no Docker needed (pipeline only)
-go run ./cmd/veild -backend=container   # real hardened, no-network container
+go run ./cmd/veild -backend=container   # real hardened container on veil-net
 ```
 
-The tap is still a stub — it proves the observation pipeline end to end before
-real host-side capture is wired in.
+When the container backend is up, the box joins an **internal** (no-egress)
+`veil-net` Docker network, and `veild` runs a **packet tap** by default
+(`-tap=packet`): on Linux it captures the world's real traffic off the `veil-net`
+bridge and streams it as events; elsewhere (e.g. macOS Docker Desktop) it logs a
+notice and falls back to the synthetic stub tap. Force it with `-tap=stub`. Real
+capture is validated on Linux (`VEIL_PCAP_IT`).
 
 ```sh
 make build      # binaries -> bin/veild, bin/veil-agent

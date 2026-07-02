@@ -1,5 +1,7 @@
 package sandbox
 
+import "github.com/miki-przygoda/veil/internal/docker"
+
 // Ownership labels let a future startup GC prune everything we created.
 const (
 	labelManaged = "com.veil.managed"
@@ -12,6 +14,7 @@ type Config struct {
 	Cmd       []string // keepalive/workload command
 	Memory    int64    // hard memory cap, bytes
 	PidsLimit int64    // max processes
+	Network   string   // "" => no network (NetworkMode:none); else the network to join
 }
 
 // DefaultConfig returns hardened defaults: a minimal base image kept alive with
@@ -30,7 +33,7 @@ func DefaultConfig() Config {
 // Zero-valued hardening fields fall back to safe defaults so a partially-filled
 // Config can never silently produce an uncapped container (Docker reads an
 // absent/zero Memory or PidsLimit as "unlimited").
-func (c Config) buildSpec(world string) createSpec {
+func (c Config) buildSpec(world string) docker.CreateSpec {
 	def := DefaultConfig()
 	cmd := c.Cmd
 	if len(cmd) == 0 {
@@ -44,20 +47,26 @@ func (c Config) buildSpec(world string) createSpec {
 	if pids <= 0 {
 		pids = def.PidsLimit
 	}
-	return createSpec{
-		name:            "veil-" + world,
+	netDisabled := true
+	netMode := "none"
+	if c.Network != "" {
+		netDisabled = false
+		netMode = c.Network
+	}
+	return docker.CreateSpec{
+		Name:            "veil-" + world,
 		Image:           c.Image,
 		Cmd:             cmd,
 		Labels:          map[string]string{labelManaged: "true", labelWorld: world},
-		NetworkDisabled: true,
-		HostConfig: hostConfig{
+		NetworkDisabled: netDisabled,
+		HostConfig: docker.HostConfig{
 			ReadonlyRootfs: true,
 			Tmpfs:          map[string]string{"/tmp": "", "/run": ""},
 			CapDrop:        []string{"ALL"},
 			SecurityOpt:    []string{"no-new-privileges:true"},
 			PidsLimit:      pids,
 			Memory:         mem,
-			NetworkMode:    "none",
+			NetworkMode:    netMode,
 		},
 	}
 }

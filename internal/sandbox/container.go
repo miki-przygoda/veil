@@ -6,6 +6,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/miki-przygoda/veil/internal/docker"
 	"github.com/miki-przygoda/veil/internal/events"
 )
 
@@ -31,11 +32,11 @@ var _ Sandbox = (*Container)(nil)
 // NewContainer builds a Container backed by the real Docker engine. It does no
 // I/O; Create performs the first daemon calls. Zero-value cfg uses DefaultConfig.
 func NewContainer(id string, bus *events.Bus, cfg Config) (*Container, error) {
-	eng, err := newDockerEngine(os.Getenv("DOCKER_HOST"))
+	cli, err := docker.New(os.Getenv("DOCKER_HOST"))
 	if err != nil {
 		return nil, err
 	}
-	return newContainerWithEngine(id, bus, cfg, eng), nil
+	return newContainerWithEngine(id, bus, cfg, dockerAdapter{c: cli}), nil
 }
 
 // newContainerWithEngine injects an engine (the real one, or a fake in tests).
@@ -82,7 +83,7 @@ func (c *Container) Create(ctx context.Context) error {
 	}
 	spec := c.cfg.buildSpec(c.id)
 	// Reconcile a crashed-run orphan with the same name (404 tolerated).
-	if err := c.eng.remove(ctx, spec.name, true); err != nil {
+	if err := c.eng.remove(ctx, spec.Name, true); err != nil {
 		return err
 	}
 	cid, err := c.eng.create(ctx, spec)
