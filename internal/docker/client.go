@@ -48,6 +48,7 @@ type HostConfig struct {
 	PidsLimit      int64             `json:"PidsLimit,omitempty"`
 	Memory         int64             `json:"Memory,omitempty"`
 	NetworkMode    string            `json:"NetworkMode,omitempty"`
+	Dns            []string          `json:"Dns,omitempty"` // per-container resolver list
 	MaskedPaths    []string          `json:"MaskedPaths,omitempty"`
 	ReadonlyPaths  []string          `json:"ReadonlyPaths,omitempty"`
 	UsernsMode     string            `json:"UsernsMode,omitempty"`
@@ -286,6 +287,8 @@ type Network struct {
 	Name     string
 	Internal bool
 	Bridge   string // resolved host bridge interface name
+	Subnet   string // IPAM.Config[0].Subnet, e.g. "172.20.0.0/16"
+	Gateway  string // IPAM.Config[0].Gateway, e.g. "172.20.0.1"
 }
 
 func (c *Client) CreateNetwork(ctx context.Context, spec NetworkSpec) (string, error) {
@@ -321,6 +324,12 @@ func (c *Client) InspectNetwork(ctx context.Context, id string) (Network, error)
 		Name     string            `json:"Name"`
 		Internal bool              `json:"Internal"`
 		Options  map[string]string `json:"Options"`
+		IPAM     struct {
+			Config []struct {
+				Subnet  string `json:"Subnet"`
+				Gateway string `json:"Gateway"`
+			} `json:"Config"`
+		} `json:"IPAM"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return Network{}, err
@@ -329,7 +338,11 @@ func (c *Client) InspectNetwork(ctx context.Context, id string) (Network, error)
 	if bridge == "" && len(raw.ID) >= 12 {
 		bridge = "br-" + raw.ID[:12] // Docker's default bridge naming
 	}
-	return Network{ID: raw.ID, Name: raw.Name, Internal: raw.Internal, Bridge: bridge}, nil
+	var subnet, gateway string
+	if len(raw.IPAM.Config) > 0 {
+		subnet, gateway = raw.IPAM.Config[0].Subnet, raw.IPAM.Config[0].Gateway
+	}
+	return Network{ID: raw.ID, Name: raw.Name, Internal: raw.Internal, Bridge: bridge, Subnet: subnet, Gateway: gateway}, nil
 }
 
 func (c *Client) RemoveNetwork(ctx context.Context, id string) error {

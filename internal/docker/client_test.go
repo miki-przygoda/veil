@@ -69,7 +69,7 @@ func TestDockerClientHappyPaths(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"Id":"net-1","Name":"veil-net","Internal":true,"Options":{"com.docker.network.bridge.name":"veil-br0"}}`))
+		_, _ = w.Write([]byte(`{"Id":"net-1","Name":"veil-net","Internal":true,"Options":{"com.docker.network.bridge.name":"veil-br0"},"IPAM":{"Config":[{"Subnet":"172.20.0.0/16","Gateway":"172.20.0.1"}]}}`))
 	})
 	mux.HandleFunc(vp+"/networks/missing", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -114,6 +114,9 @@ func TestDockerClientHappyPaths(t *testing.T) {
 	n, err := cli.InspectNetwork(ctx, "net-1")
 	if err != nil || n.Bridge != "veil-br0" || !n.Internal {
 		t.Fatalf("InspectNetwork: %+v err=%v", n, err)
+	}
+	if n.Subnet != "172.20.0.0/16" || n.Gateway != "172.20.0.1" {
+		t.Errorf("IPAM = %q / %q, want 172.20.0.0/16 / 172.20.0.1", n.Subnet, n.Gateway)
 	}
 	if err := cli.RemoveNetwork(ctx, "net-1"); err != nil {
 		t.Fatalf("RemoveNetwork: %v", err)
