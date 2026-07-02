@@ -264,3 +264,75 @@ func (c *Client) RemoveImage(ctx context.Context, ref string) error {
 	}
 	return nil
 }
+
+// NetworkSpec is the body for POST /networks/create.
+type NetworkSpec struct {
+	Name       string            `json:"Name"`
+	Internal   bool              `json:"Internal"`
+	Labels     map[string]string `json:"Labels,omitempty"`
+	BridgeName string            `json:"-"` // -> Options["com.docker.network.bridge.name"]
+}
+
+// Network is the subset of GET /networks/{id} we use.
+type Network struct {
+	ID       string
+	Name     string
+	Internal bool
+	Bridge   string // resolved host bridge interface name
+}
+
+func (c *Client) CreateNetwork(ctx context.Context, spec NetworkSpec) (string, error) {
+	body := map[string]any{"Name": spec.Name, "Internal": spec.Internal}
+	if len(spec.Labels) > 0 {
+		body["Labels"] = spec.Labels
+	}
+	if spec.BridgeName != "" {
+		body["Options"] = map[string]string{"com.docker.network.bridge.name": spec.BridgeName}
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/networks/create", nil, body)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return "", decodeError(resp)
+	}
+	return decodeID(resp)
+}
+
+func (c *Client) InspectNetwork(ctx context.Context, id string) (Network, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/networks/"+id, nil, nil)
+	if err != nil {
+		return Network{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return Network{}, decodeError(resp)
+	}
+	var raw struct {
+		ID       string            `json:"Id"`
+		Name     string            `json:"Name"`
+		Internal bool              `json:"Internal"`
+		Options  map[string]string `json:"Options"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return Network{}, err
+	}
+	bridge := raw.Options["com.docker.network.bridge.name"]
+	if bridge == "" && len(raw.ID) >= 12 {
+		bridge = "br-" + raw.ID[:12] // Docker's default bridge naming
+	}
+	return Network{ID: raw.ID, Name: raw.Name, Internal: raw.Internal, Bridge: bridge}, nil
+}
+
+func (c *Client) RemoveNetwork(ctx context.Context, id string) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/networks/"+id, nil, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotFound {
+		return decodeError(resp)
+	}
+	return nil
+}

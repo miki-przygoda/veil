@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -49,6 +50,23 @@ func TestDockerClientHappyPaths(t *testing.T) {
 	mux.HandleFunc(vp+"/images/img-gone", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"message":"No such image"}`, http.StatusNotFound)
 	})
+	mux.HandleFunc(vp+"/networks/create", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["Name"] != "veil-net" || body["Internal"] != true {
+			t.Errorf("network create body = %v, want Name=veil-net Internal=true", body)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"Id":"net-1"}`))
+	})
+	mux.HandleFunc(vp+"/networks/net-1", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"Id":"net-1","Name":"veil-net","Internal":true,"Options":{"com.docker.network.bridge.name":"veil-br0"}}`))
+	})
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -81,6 +99,17 @@ func TestDockerClientHappyPaths(t *testing.T) {
 	}
 	if err := cli.RemoveImage(ctx, "img-gone"); err != nil {
 		t.Fatalf("RemoveImage must tolerate 404: %v", err)
+	}
+	id, err := cli.CreateNetwork(ctx, NetworkSpec{Name: "veil-net", Internal: true, Labels: map[string]string{"com.veil.managed": "true"}, BridgeName: "veil-br0"})
+	if err != nil || id != "net-1" {
+		t.Fatalf("CreateNetwork: id=%q err=%v", id, err)
+	}
+	n, err := cli.InspectNetwork(ctx, "net-1")
+	if err != nil || n.Bridge != "veil-br0" || !n.Internal {
+		t.Fatalf("InspectNetwork: %+v err=%v", n, err)
+	}
+	if err := cli.RemoveNetwork(ctx, "net-1"); err != nil {
+		t.Fatalf("RemoveNetwork: %v", err)
 	}
 }
 
