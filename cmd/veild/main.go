@@ -81,21 +81,26 @@ func main() {
 
 	// The world's network: an internal (no-egress) Docker network the box joins
 	// and the tap observes. Best-effort — if it fails, the box stays isolated.
+	// teardownFabric is called inline in the shutdown sequence (not deferred) so
+	// it also runs on the viz-error os.Exit path.
 	var netName, bridge string
+	teardownFabric := func() {}
 	if *backend != "stub" {
-		if cli, err := docker.New(os.Getenv("DOCKER_HOST")); err == nil {
+		if cli, err := docker.New(os.Getenv("DOCKER_HOST")); err != nil {
+			log.Warn("docker client unavailable, skipping network", "err", err)
+		} else {
 			fabric := netfabric.NewFabric(cli, "veil-net")
 			if net, err := fabric.Ensure(ctx); err != nil {
 				log.Warn("network setup failed, box stays isolated", "err", err)
 			} else {
 				netName, bridge = net.Name, net.Bridge
-				defer func() {
+				teardownFabric = func() {
 					tctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()
 					if err := fabric.Teardown(tctx); err != nil {
 						log.Warn("network teardown", "err", err)
 					}
-				}()
+				}
 			}
 		}
 	}
@@ -135,6 +140,7 @@ func main() {
 		log.Warn("sandbox destroy on shutdown", "err", err)
 	}
 	cancelDestroy()
+	teardownFabric()
 
 	if runErr != nil {
 		log.Error("viz", "err", runErr)
