@@ -1,9 +1,9 @@
 // Command veild is Veil's host-side control plane — the "outside" of the world.
 //
 // It wires the spine together: a sandbox (container-backed by default, stub
-// fallback), synthetic residents, a host-side tap (stubbed), and the live
-// observation feed. Run it and open http://localhost:8080 to watch events
-// stream out of the world in real time.
+// fallback), synthetic residents, a host-side tap (packet by default, stub
+// fallback), and the live observation feed. Run it and open http://localhost:8080
+// to watch events stream out of the world in real time.
 package main
 
 import (
@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/miki-przygoda/veil/internal/docker"
 	"github.com/miki-przygoda/veil/internal/events"
 	"github.com/miki-przygoda/veil/internal/netfabric"
 	"github.com/miki-przygoda/veil/internal/residents"
@@ -25,11 +26,14 @@ import (
 // selectSandbox picks the isolation backend. The container backend is the
 // default; if the Docker daemon is unreachable it logs, emits an observable
 // KindSystem event, and falls back to the stub so the demo still boots.
-func selectSandbox(ctx context.Context, backend string, bus *events.Bus, log *slog.Logger) sandbox.Sandbox {
+// network is the Docker network the box should join ("" keeps it isolated).
+func selectSandbox(ctx context.Context, backend, network string, bus *events.Bus, log *slog.Logger) sandbox.Sandbox {
 	if backend == "stub" {
 		return sandbox.NewStub("world-01", bus)
 	}
-	c, err := sandbox.NewContainer("world-01", bus, sandbox.DefaultConfig())
+	cfg := sandbox.DefaultConfig()
+	cfg.Network = network // "" keeps NetworkMode:none
+	c, err := sandbox.NewContainer("world-01", bus, cfg)
 	if err == nil {
 		err = c.Ping(ctx)
 	}
@@ -40,12 +44,32 @@ func selectSandbox(ctx context.Context, backend string, bus *events.Bus, log *sl
 		bus.Publish(e)
 		return sandbox.NewStub("world-01", bus)
 	}
-	log.Info("using container backend")
+	log.Info("using container backend", "network", network)
 	return c
+}
+
+// selectTap picks the tap backend. The packet tap captures real traffic off the
+// world's bridge; if capture is unavailable (non-Linux, no privilege) it logs,
+// emits an observable KindSystem event, and falls back to the synthetic StubTap.
+func selectTap(ctx context.Context, tapMode, bridge string, bus *events.Bus, log *slog.Logger) netfabric.Tap {
+	if tapMode == "stub" {
+		return &netfabric.StubTap{Interval: 2 * time.Second}
+	}
+	tap, err := netfabric.OpenTap(bridge)
+	if err != nil {
+		log.Warn("packet capture unavailable, using stub tap", "err", err)
+		e := events.New(events.KindSystem, "veild", "tap fallback")
+		e.Detail = "packet capture unavailable: " + err.Error() + "; using stub"
+		bus.Publish(e)
+		return &netfabric.StubTap{Interval: 2 * time.Second}
+	}
+	log.Info("using packet tap", "bridge", bridge)
+	return tap
 }
 
 func main() {
 	backend := flag.String("backend", "container", "sandbox backend: container|stub")
+	tapMode := flag.String("tap", "packet", "tap backend: packet|stub")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -55,8 +79,29 @@ func main() {
 
 	bus := events.NewBus(512)
 
+	// The world's network: an internal (no-egress) Docker network the box joins
+	// and the tap observes. Best-effort — if it fails, the box stays isolated.
+	var netName, bridge string
+	if *backend != "stub" {
+		if cli, err := docker.New(os.Getenv("DOCKER_HOST")); err == nil {
+			fabric := netfabric.NewFabric(cli, "veil-net")
+			if net, err := fabric.Ensure(ctx); err != nil {
+				log.Warn("network setup failed, box stays isolated", "err", err)
+			} else {
+				netName, bridge = net.Name, net.Bridge
+				defer func() {
+					tctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if err := fabric.Teardown(tctx); err != nil {
+						log.Warn("network teardown", "err", err)
+					}
+				}()
+			}
+		}
+	}
+
 	// The contained world.
-	box := selectSandbox(ctx, *backend, bus, log)
+	box := selectSandbox(ctx, *backend, netName, bus, log)
 	if err := box.Create(ctx); err != nil {
 		log.Error("sandbox create", "err", err)
 		os.Exit(1)
@@ -69,9 +114,10 @@ func main() {
 	// Synthetic inhabitants so the world looks alive.
 	go (&residents.Population{Size: 5}).Run(ctx, bus)
 
-	// Host-side passive tap. Stub for now.
+	// Host-side passive tap. Packet tap by default; falls back to stub when
+	// capture is unavailable (non-Linux or insufficient privilege).
 	go func() {
-		tap := &netfabric.StubTap{Interval: 2 * time.Second}
+		tap := selectTap(ctx, *tapMode, bridge, bus, log)
 		if err := tap.Run(ctx, bus); err != nil && ctx.Err() == nil {
 			log.Error("tap", "err", err)
 		}
