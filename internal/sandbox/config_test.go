@@ -164,6 +164,9 @@ func TestBuildSpecOptInControls(t *testing.T) {
 	if !slices.Contains(spec.HostConfig.SecurityOpt, `seccomp={"defaultAction":"SCMP_ACT_ERRNO"}`) {
 		t.Errorf("SecurityOpt = %v, want the seccomp profile", spec.HostConfig.SecurityOpt)
 	}
+	if !slices.Contains(spec.HostConfig.SecurityOpt, "no-new-privileges:true") {
+		t.Errorf("SecurityOpt = %v; no-new-privileges:true must survive opt-in controls", spec.HostConfig.SecurityOpt)
+	}
 }
 
 func jsonArrayHasString(v any, want string) bool {
