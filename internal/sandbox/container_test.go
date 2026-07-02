@@ -8,6 +8,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/miki-przygoda/veil/internal/docker"
 	"github.com/miki-przygoda/veil/internal/events"
 )
 
@@ -32,7 +33,7 @@ type fakeCall struct {
 	op   string
 	id   string
 	ref  string
-	spec createSpec
+	spec docker.CreateSpec
 }
 
 func (f *fakeEngine) ping(context.Context) error {
@@ -43,7 +44,7 @@ func (f *fakeEngine) imageExists(_ context.Context, ref string) (bool, error) {
 	f.calls = append(f.calls, fakeCall{op: "imageExists", ref: ref})
 	return f.imagePresent, f.imageErr
 }
-func (f *fakeEngine) create(_ context.Context, spec createSpec) (string, error) {
+func (f *fakeEngine) create(_ context.Context, spec docker.CreateSpec) (string, error) {
 	f.calls = append(f.calls, fakeCall{op: "create", spec: spec})
 	if f.createErr != nil {
 		return "", f.createErr
@@ -275,7 +276,7 @@ func TestContainerResetUsesBaseBeforeSnapshot(t *testing.T) {
 	if err := c.Reset(context.Background()); err != nil {
 		t.Fatalf("Reset: %v", err)
 	}
-	var lastCreate createSpec
+	var lastCreate docker.CreateSpec
 	for _, cl := range fe.calls {
 		if cl.op == "create" {
 			lastCreate = cl.spec

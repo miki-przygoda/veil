@@ -1,4 +1,4 @@
-package sandbox
+package docker
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestDockerEngineHappyPaths(t *testing.T) {
+func TestDockerClientHappyPaths(t *testing.T) {
 	mux := http.NewServeMux()
 	vp := "/" + dockerAPIVersion // versioned-endpoint prefix, kept in sync with the client
 	mux.HandleFunc("/_ping", func(w http.ResponseWriter, _ *http.Request) {
@@ -52,44 +52,44 @@ func TestDockerEngineHappyPaths(t *testing.T) {
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	eng := newEngineWithClient(srv.Client(), srv.URL)
+	cli := newClientWithHTTP(srv.Client(), srv.URL)
 	ctx := context.Background()
 
-	if err := eng.ping(ctx); err != nil {
-		t.Fatalf("ping: %v", err)
+	if err := cli.Ping(ctx); err != nil {
+		t.Fatalf("Ping: %v", err)
 	}
-	if ok, err := eng.imageExists(ctx, "present:1"); err != nil || !ok {
-		t.Fatalf("imageExists present: ok=%v err=%v", ok, err)
+	if ok, err := cli.ImageExists(ctx, "present:1"); err != nil || !ok {
+		t.Fatalf("ImageExists present: ok=%v err=%v", ok, err)
 	}
-	if ok, err := eng.imageExists(ctx, "missing:1"); err != nil || ok {
-		t.Fatalf("imageExists missing: ok=%v err=%v", ok, err)
+	if ok, err := cli.ImageExists(ctx, "missing:1"); err != nil || ok {
+		t.Fatalf("ImageExists missing: ok=%v err=%v", ok, err)
 	}
-	if id, err := eng.create(ctx, createSpec{name: "veil-x", Image: "present:1"}); err != nil || id != "cid-1" {
-		t.Fatalf("create: id=%q err=%v", id, err)
+	if id, err := cli.CreateContainer(ctx, CreateSpec{Name: "veil-x", Image: "present:1"}); err != nil || id != "cid-1" {
+		t.Fatalf("CreateContainer: id=%q err=%v", id, err)
 	}
-	if err := eng.start(ctx, "cid-1"); err != nil {
-		t.Fatalf("start: %v", err)
+	if err := cli.StartContainer(ctx, "cid-1"); err != nil {
+		t.Fatalf("StartContainer: %v", err)
 	}
-	if err := eng.remove(ctx, "gone", true); err != nil {
-		t.Fatalf("remove must tolerate 404: %v", err)
+	if err := cli.RemoveContainer(ctx, "gone", true); err != nil {
+		t.Fatalf("RemoveContainer must tolerate 404: %v", err)
 	}
-	if img, err := eng.commit(ctx, "cid-1", "veil-snap-x:latest"); err != nil || img != "img-2" {
-		t.Fatalf("commit: img=%q err=%v", img, err)
+	if img, err := cli.Commit(ctx, "cid-1", "veil-snap-x:latest"); err != nil || img != "img-2" {
+		t.Fatalf("Commit: img=%q err=%v", img, err)
 	}
-	if err := eng.removeImage(ctx, "img-ok"); err != nil {
-		t.Fatalf("removeImage 200: %v", err)
+	if err := cli.RemoveImage(ctx, "img-ok"); err != nil {
+		t.Fatalf("RemoveImage 200: %v", err)
 	}
-	if err := eng.removeImage(ctx, "img-gone"); err != nil {
-		t.Fatalf("removeImage must tolerate 404: %v", err)
+	if err := cli.RemoveImage(ctx, "img-gone"); err != nil {
+		t.Fatalf("RemoveImage must tolerate 404: %v", err)
 	}
 }
 
-func TestDockerEnginePingUnavailable(t *testing.T) {
-	eng, err := newDockerEngine("unix:///nonexistent/veil-test.sock")
+func TestDockerClientPingUnavailable(t *testing.T) {
+	cli, err := New("unix:///nonexistent/veil-test.sock")
 	if err != nil {
-		t.Fatalf("newDockerEngine: %v", err)
+		t.Fatalf("New: %v", err)
 	}
-	if err := eng.ping(context.Background()); !errors.Is(err, ErrEngineUnavailable) {
-		t.Fatalf("ping err = %v, want ErrEngineUnavailable", err)
+	if err := cli.Ping(context.Background()); !errors.Is(err, ErrEngineUnavailable) {
+		t.Fatalf("Ping err = %v, want ErrEngineUnavailable", err)
 	}
 }

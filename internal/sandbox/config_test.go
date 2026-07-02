@@ -9,8 +9,8 @@ import (
 func TestBuildSpecHardening(t *testing.T) {
 	spec := DefaultConfig().buildSpec("world-01")
 
-	if spec.name != "veil-world-01" {
-		t.Errorf("name = %q, want veil-world-01", spec.name)
+	if spec.Name != "veil-world-01" {
+		t.Errorf("Name = %q, want veil-world-01", spec.Name)
 	}
 	if !spec.NetworkDisabled {
 		t.Error("NetworkDisabled = false, want true (invariants #1/#2)")

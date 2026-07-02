@@ -1,9 +1,10 @@
-package sandbox
+package docker
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -13,24 +14,57 @@ import (
 	"time"
 )
 
+// ErrEngineUnavailable means the Docker daemon could not be reached.
+var ErrEngineUnavailable = errors.New("docker engine unavailable")
+
+// engineError wraps a non-2xx Docker API response.
+type engineError struct {
+	status  int
+	message string
+}
+
+func (e *engineError) Error() string {
+	return fmt.Sprintf("docker api: status %d: %s", e.status, e.message)
+}
+
+// CreateSpec is the body (plus Name) for POST /containers/create. Name is sent
+// as the ?name= query parameter, never in the JSON body.
+type CreateSpec struct {
+	Name string `json:"-"`
+
+	Image           string            `json:"Image"`
+	Cmd             []string          `json:"Cmd,omitempty"`
+	Labels          map[string]string `json:"Labels,omitempty"`
+	NetworkDisabled bool              `json:"NetworkDisabled"`
+	HostConfig      HostConfig        `json:"HostConfig"`
+}
+
+type HostConfig struct {
+	ReadonlyRootfs bool              `json:"ReadonlyRootfs"`
+	Tmpfs          map[string]string `json:"Tmpfs,omitempty"`
+	CapDrop        []string          `json:"CapDrop,omitempty"`
+	SecurityOpt    []string          `json:"SecurityOpt,omitempty"`
+	PidsLimit      int64             `json:"PidsLimit,omitempty"`
+	Memory         int64             `json:"Memory,omitempty"`
+	NetworkMode    string            `json:"NetworkMode,omitempty"`
+}
+
 // dockerAPIVersion is the pinned Engine API version. Docker daemons reject
 // versions below their minimum (Docker 29's minimum is 1.44), so this must be
 // >= the oldest daemon we target. Version negotiation via GET /version would be
 // more robust across very old/new daemons; see the design's future work.
 const dockerAPIVersion = "v1.44"
 
-// dockerEngine talks to the Docker Engine API over a unix socket using only the
+// Client talks to the Docker Engine API over a unix socket using only the
 // standard library.
-type dockerEngine struct {
+type Client struct {
 	httpc *http.Client
 	root  string // scheme+host, e.g. http://docker (real) or the httptest URL
 }
 
-var _ engine = (*dockerEngine)(nil)
-
-// newDockerEngine builds an engine for the given DOCKER_HOST value. Empty means
-// the default unix socket. Only unix:// (or empty) is supported this iteration.
-func newDockerEngine(host string) (*dockerEngine, error) {
+// New builds a Client for the given DOCKER_HOST value. Empty means the default
+// unix socket. Only unix:// (or empty) is supported this iteration.
+func New(host string) (*Client, error) {
 	socket := "/var/run/docker.sock"
 	switch {
 	case host == "":
@@ -45,24 +79,24 @@ func newDockerEngine(host string) (*dockerEngine, error) {
 			return d.DialContext(ctx, "unix", socket)
 		},
 	}
-	return &dockerEngine{httpc: &http.Client{Transport: tr, Timeout: 30 * time.Second}, root: "http://docker"}, nil
+	return &Client{httpc: &http.Client{Transport: tr, Timeout: 30 * time.Second}, root: "http://docker"}, nil
 }
 
-// newEngineWithClient injects an HTTP client + root URL (used by tests against
+// newClientWithHTTP injects an HTTP client + root URL (used by tests against
 // an httptest server, so the request/response contract is exercised offline).
-func newEngineWithClient(httpc *http.Client, root string) *dockerEngine {
-	return &dockerEngine{httpc: httpc, root: root}
+func newClientWithHTTP(httpc *http.Client, root string) *Client {
+	return &Client{httpc: httpc, root: root}
 }
 
-func (e *dockerEngine) versioned(path string) string {
-	return e.root + "/" + dockerAPIVersion + path
+func (c *Client) versioned(path string) string {
+	return c.root + "/" + dockerAPIVersion + path
 }
 
 // do issues a request to a versioned endpoint, JSON-encoding body if non-nil.
 // A transport-level failure means the daemon is unreachable, so it is wrapped
 // with ErrEngineUnavailable for every method (not just ping); callers may
 // therefore errors.Is(err, ErrEngineUnavailable) after any engine call.
-func (e *dockerEngine) do(ctx context.Context, method, path string, query url.Values, body any) (*http.Response, error) {
+func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any) (*http.Response, error) {
 	// Keep bodyReader a nil io.Reader interface when there is no body; passing a
 	// typed-nil *bytes.Reader would make NewRequest try to read it.
 	var bodyReader io.Reader
@@ -73,7 +107,7 @@ func (e *dockerEngine) do(ctx context.Context, method, path string, query url.Va
 		}
 		bodyReader = bytes.NewReader(b)
 	}
-	u := e.versioned(path)
+	u := c.versioned(path)
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
@@ -84,7 +118,7 @@ func (e *dockerEngine) do(ctx context.Context, method, path string, query url.Va
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := e.httpc.Do(req)
+	resp, err := c.httpc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrEngineUnavailable, err)
 	}
@@ -112,12 +146,13 @@ func decodeID(resp *http.Response) (string, error) {
 	return out.ID, nil
 }
 
-func (e *dockerEngine) ping(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.root+"/_ping", nil)
+// Ping checks whether the Docker daemon is reachable.
+func (c *Client) Ping(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.root+"/_ping", nil)
 	if err != nil {
 		return err
 	}
-	resp, err := e.httpc.Do(req)
+	resp, err := c.httpc.Do(req)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrEngineUnavailable, err)
 	}
@@ -128,8 +163,9 @@ func (e *dockerEngine) ping(ctx context.Context) error {
 	return nil
 }
 
-func (e *dockerEngine) imageExists(ctx context.Context, ref string) (bool, error) {
-	resp, err := e.do(ctx, http.MethodGet, "/images/"+ref+"/json", nil, nil)
+// ImageExists reports whether the image ref is present locally.
+func (c *Client) ImageExists(ctx context.Context, ref string) (bool, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/images/"+ref+"/json", nil, nil)
 	if err != nil {
 		return false, err
 	}
@@ -144,12 +180,13 @@ func (e *dockerEngine) imageExists(ctx context.Context, ref string) (bool, error
 	}
 }
 
-func (e *dockerEngine) create(ctx context.Context, spec createSpec) (string, error) {
+// CreateContainer creates a container from the given spec and returns its ID.
+func (c *Client) CreateContainer(ctx context.Context, spec CreateSpec) (string, error) {
 	q := url.Values{}
-	if spec.name != "" {
-		q.Set("name", spec.name)
+	if spec.Name != "" {
+		q.Set("name", spec.Name)
 	}
-	resp, err := e.do(ctx, http.MethodPost, "/containers/create", q, spec)
+	resp, err := c.do(ctx, http.MethodPost, "/containers/create", q, spec)
 	if err != nil {
 		return "", err
 	}
@@ -160,8 +197,9 @@ func (e *dockerEngine) create(ctx context.Context, spec createSpec) (string, err
 	return decodeID(resp)
 }
 
-func (e *dockerEngine) start(ctx context.Context, id string) error {
-	resp, err := e.do(ctx, http.MethodPost, "/containers/"+id+"/start", nil, nil)
+// StartContainer starts the container with the given ID.
+func (c *Client) StartContainer(ctx context.Context, id string) error {
+	resp, err := c.do(ctx, http.MethodPost, "/containers/"+id+"/start", nil, nil)
 	if err != nil {
 		return err
 	}
@@ -173,12 +211,14 @@ func (e *dockerEngine) start(ctx context.Context, id string) error {
 	return nil
 }
 
-func (e *dockerEngine) remove(ctx context.Context, id string, force bool) error {
+// RemoveContainer removes the container with the given ID. If force is true,
+// the container is removed even if it is running. 404 is tolerated (idempotent).
+func (c *Client) RemoveContainer(ctx context.Context, id string, force bool) error {
 	q := url.Values{}
 	if force {
 		q.Set("force", "1")
 	}
-	resp, err := e.do(ctx, http.MethodDelete, "/containers/"+id, q, nil)
+	resp, err := c.do(ctx, http.MethodDelete, "/containers/"+id, q, nil)
 	if err != nil {
 		return err
 	}
@@ -190,7 +230,8 @@ func (e *dockerEngine) remove(ctx context.Context, id string, force bool) error 
 	return nil
 }
 
-func (e *dockerEngine) commit(ctx context.Context, id, ref string) (string, error) {
+// Commit commits the container as an image and returns the new image ID.
+func (c *Client) Commit(ctx context.Context, id, ref string) (string, error) {
 	repo, tag, _ := strings.Cut(ref, ":")
 	q := url.Values{}
 	q.Set("container", id)
@@ -198,7 +239,7 @@ func (e *dockerEngine) commit(ctx context.Context, id, ref string) (string, erro
 	if tag != "" {
 		q.Set("tag", tag)
 	}
-	resp, err := e.do(ctx, http.MethodPost, "/commit", q, nil)
+	resp, err := c.do(ctx, http.MethodPost, "/commit", q, nil)
 	if err != nil {
 		return "", err
 	}
@@ -209,10 +250,11 @@ func (e *dockerEngine) commit(ctx context.Context, id, ref string) (string, erro
 	return decodeID(resp)
 }
 
-func (e *dockerEngine) removeImage(ctx context.Context, ref string) error {
+// RemoveImage removes the image by ref. 404 is tolerated (idempotent).
+func (c *Client) RemoveImage(ctx context.Context, ref string) error {
 	q := url.Values{}
 	q.Set("force", "1")
-	resp, err := e.do(ctx, http.MethodDelete, "/images/"+ref, q, nil)
+	resp, err := c.do(ctx, http.MethodDelete, "/images/"+ref, q, nil)
 	if err != nil {
 		return err
 	}

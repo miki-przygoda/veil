@@ -1,5 +1,7 @@
 package sandbox
 
+import "github.com/miki-przygoda/veil/internal/docker"
+
 // Ownership labels let a future startup GC prune everything we created.
 const (
 	labelManaged = "com.veil.managed"
@@ -30,7 +32,7 @@ func DefaultConfig() Config {
 // Zero-valued hardening fields fall back to safe defaults so a partially-filled
 // Config can never silently produce an uncapped container (Docker reads an
 // absent/zero Memory or PidsLimit as "unlimited").
-func (c Config) buildSpec(world string) createSpec {
+func (c Config) buildSpec(world string) docker.CreateSpec {
 	def := DefaultConfig()
 	cmd := c.Cmd
 	if len(cmd) == 0 {
@@ -44,13 +46,13 @@ func (c Config) buildSpec(world string) createSpec {
 	if pids <= 0 {
 		pids = def.PidsLimit
 	}
-	return createSpec{
-		name:            "veil-" + world,
+	return docker.CreateSpec{
+		Name:            "veil-" + world,
 		Image:           c.Image,
 		Cmd:             cmd,
 		Labels:          map[string]string{labelManaged: "true", labelWorld: world},
 		NetworkDisabled: true,
-		HostConfig: hostConfig{
+		HostConfig: docker.HostConfig{
 			ReadonlyRootfs: true,
 			Tmpfs:          map[string]string{"/tmp": "", "/run": ""},
 			CapDrop:        []string{"ALL"},
