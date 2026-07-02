@@ -29,8 +29,10 @@ func NewFabric(cli networkClient, name string) *Fabric {
 	return &Fabric{cli: cli, name: name, bridge: "veil-br0"}
 }
 
-// Ensure creates the internal network if absent (idempotent) and returns it,
-// with the deterministic host bridge interface name resolved.
+// Ensure creates the internal network and returns the inspected result, with the
+// deterministic host bridge interface name resolved. Idempotency against a
+// pre-existing network (Docker returns 409 on a duplicate) is handled by the
+// integration task, not here.
 func (f *Fabric) Ensure(ctx context.Context) (docker.Network, error) {
 	id, err := f.cli.CreateNetwork(ctx, docker.NetworkSpec{
 		Name:       f.name,

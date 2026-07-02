@@ -73,3 +73,31 @@ func TestFabricTeardown(t *testing.T) {
 		t.Errorf("removed = %v, want [net-1]", fn.removed)
 	}
 }
+
+func TestFabricTeardownNoop(t *testing.T) {
+	fn := &fakeNet{createID: "net-1"}
+	f := NewFabric(fn, "veil-net")
+	// Ensure was never called; Teardown must be silent and touch nothing.
+	if err := f.Teardown(context.Background()); err != nil {
+		t.Fatalf("Teardown without Ensure: %v", err)
+	}
+	if len(fn.removed) != 0 {
+		t.Errorf("RemoveNetwork called %d times, want 0", len(fn.removed))
+	}
+}
+
+func TestFabricEnsureError(t *testing.T) {
+	boom := errors.New("create failed")
+	fn := &fakeNet{createErr: boom}
+	f := NewFabric(fn, "veil-net")
+	if _, err := f.Ensure(context.Background()); !errors.Is(err, boom) {
+		t.Fatalf("Ensure err = %v, want boom", err)
+	}
+	// A failed Ensure recorded no id, so Teardown stays a no-op.
+	if err := f.Teardown(context.Background()); err != nil {
+		t.Fatalf("Teardown after failed Ensure: %v", err)
+	}
+	if len(fn.removed) != 0 {
+		t.Errorf("RemoveNetwork called after a failed Ensure")
+	}
+}
