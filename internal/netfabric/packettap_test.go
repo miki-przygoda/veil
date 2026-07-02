@@ -59,6 +59,22 @@ func TestPacketTapEmitsEvents(t *testing.T) {
 	}
 }
 
+func TestPacketTapStopsOnSourceClose(t *testing.T) {
+	src := &fakeSource{ch: make(chan packet)}
+	tap := NewPacketTap(src)
+	done := make(chan error, 1)
+	go func() { done <- tap.Run(context.Background(), events.NewBus(4)) }()
+	_ = src.close() // close the source channel; Run must return nil
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v on source close, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return on source close")
+	}
+}
+
 func TestPacketTapStopsOnCtx(t *testing.T) {
 	src := &fakeSource{ch: make(chan packet)} // never sends
 	tap := NewPacketTap(src)

@@ -2,6 +2,7 @@ package netfabric
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/miki-przygoda/veil/internal/docker"
 )
@@ -36,6 +37,12 @@ func NewFabric(cli networkClient, name string) *Fabric {
 // the returned docker.Network.
 func (f *Fabric) Ensure(ctx context.Context) (docker.Network, error) {
 	if n, err := f.cli.InspectNetwork(ctx, f.name); err == nil {
+		// Only reuse if it is actually internal — joining a non-internal network
+		// with this name (a stale leftover or a hostile pre-seed) would give the
+		// box egress and break containment. Refuse and stay isolated instead.
+		if !n.Internal {
+			return docker.Network{}, fmt.Errorf("network %q exists but is not internal; refusing to join it", f.name)
+		}
 		f.id = n.ID
 		return n, nil
 	}

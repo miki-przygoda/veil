@@ -103,6 +103,20 @@ func TestFabricEnsureError(t *testing.T) {
 	}
 }
 
+func TestFabricEnsureRefusesNonInternal(t *testing.T) {
+	fn := &fakeNet{createID: "net-1"}
+	fn.byID = map[string]docker.Network{
+		"veil-net": {ID: "existing", Name: "veil-net", Internal: false},
+	}
+	f := NewFabric(fn, "veil-net")
+	if _, err := f.Ensure(context.Background()); err == nil {
+		t.Fatal("Ensure reused a non-internal network; want error (containment)")
+	}
+	if len(fn.created) != 0 {
+		t.Errorf("CreateNetwork called %d times; want 0", len(fn.created))
+	}
+}
+
 func TestFabricEnsureReusesExisting(t *testing.T) {
 	fn := &fakeNet{createID: "net-1"}
 	f := NewFabric(fn, "veil-net")

@@ -109,10 +109,12 @@ func main() {
 	box := selectSandbox(ctx, *backend, netName, bus, log)
 	if err := box.Create(ctx); err != nil {
 		log.Error("sandbox create", "err", err)
+		teardownFabric()
 		os.Exit(1)
 	}
 	if err := box.Start(ctx); err != nil {
 		log.Error("sandbox start", "err", err)
+		teardownFabric()
 		os.Exit(1)
 	}
 

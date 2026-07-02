@@ -4,6 +4,7 @@ package netfabric
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/google/gopacket"
@@ -37,7 +38,9 @@ func openBridge(iface string) (packetSource, error) {
 func (s *afpacketSource) loop() {
 	defer close(s.out)
 	src := gopacket.NewPacketSource(s.handle, layers.LayerTypeEthernet)
+	// safe: pcapgo.EthernetHandle allocates a fresh buffer per read and decode() extracts value-typed fields before the next read. A gopacket/pcap (libpcap) swap reuses the read buffer — drop NoCopy there.
 	src.NoCopy = true
+	// NOTE: Packets() spawns a reader goroutine blocked in a raw recvfrom; close() shuts the fd but an already-blocked read on a silent bridge may linger until the next frame. Fine for a long-lived veild; revisit if OpenTap is called repeatedly.
 	in := src.Packets()
 	for {
 		select {
@@ -63,7 +66,7 @@ func decode(pkt gopacket.Packet) packet {
 		p.Src, p.Dst = f.Src().String(), f.Dst().String()
 	}
 	if t := pkt.TransportLayer(); t != nil {
-		p.Protocol = t.LayerType().String() // "TCP"/"UDP"
+		p.Protocol = strings.ToLower(t.LayerType().String())
 	} else if pkt.Layer(layers.LayerTypeARP) != nil {
 		p.Protocol = "arp"
 	}
