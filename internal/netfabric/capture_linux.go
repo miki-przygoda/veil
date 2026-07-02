@@ -47,7 +47,11 @@ func (s *afpacketSource) loop() {
 			if !ok {
 				return
 			}
-			s.out <- decode(pkt)
+			select {
+			case s.out <- decode(pkt):
+			case <-s.done:
+				return
+			}
 		}
 	}
 }
@@ -69,7 +73,9 @@ func decode(pkt gopacket.Packet) packet {
 func (s *afpacketSource) packets() <-chan packet { return s.out }
 
 func (s *afpacketSource) close() error {
-	s.once.Do(func() { close(s.done) })
-	s.handle.Close()
+	s.once.Do(func() {
+		close(s.done)
+		s.handle.Close()
+	})
 	return nil
 }
