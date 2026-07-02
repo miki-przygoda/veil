@@ -99,6 +99,21 @@ func TestBuildSpecJSONWireFormat(t *testing.T) {
 	}
 }
 
+func TestBuildSpecNetwork(t *testing.T) {
+	// Empty Network keeps the box isolated (today's default).
+	none := DefaultConfig().buildSpec("w")
+	if none.NetworkDisabled != true || none.HostConfig.NetworkMode != "none" {
+		t.Errorf("default: NetworkDisabled=%v NetworkMode=%q, want true/none", none.NetworkDisabled, none.HostConfig.NetworkMode)
+	}
+	// A named network joins it (no external egress on an internal net).
+	cfg := DefaultConfig()
+	cfg.Network = "veil-net"
+	joined := cfg.buildSpec("w")
+	if joined.NetworkDisabled != false || joined.HostConfig.NetworkMode != "veil-net" {
+		t.Errorf("joined: NetworkDisabled=%v NetworkMode=%q, want false/veil-net", joined.NetworkDisabled, joined.HostConfig.NetworkMode)
+	}
+}
+
 func jsonArrayHasString(v any, want string) bool {
 	arr, ok := v.([]any)
 	if !ok {

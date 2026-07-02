@@ -14,6 +14,7 @@ type Config struct {
 	Cmd       []string // keepalive/workload command
 	Memory    int64    // hard memory cap, bytes
 	PidsLimit int64    // max processes
+	Network   string   // "" => no network (NetworkMode:none); else the network to join
 }
 
 // DefaultConfig returns hardened defaults: a minimal base image kept alive with
@@ -46,12 +47,18 @@ func (c Config) buildSpec(world string) docker.CreateSpec {
 	if pids <= 0 {
 		pids = def.PidsLimit
 	}
+	netDisabled := true
+	netMode := "none"
+	if c.Network != "" {
+		netDisabled = false
+		netMode = c.Network
+	}
 	return docker.CreateSpec{
 		Name:            "veil-" + world,
 		Image:           c.Image,
 		Cmd:             cmd,
 		Labels:          map[string]string{labelManaged: "true", labelWorld: world},
-		NetworkDisabled: true,
+		NetworkDisabled: netDisabled,
 		HostConfig: docker.HostConfig{
 			ReadonlyRootfs: true,
 			Tmpfs:          map[string]string{"/tmp": "", "/run": ""},
@@ -59,7 +66,7 @@ func (c Config) buildSpec(world string) docker.CreateSpec {
 			SecurityOpt:    []string{"no-new-privileges:true"},
 			PidsLimit:      pids,
 			Memory:         mem,
-			NetworkMode:    "none",
+			NetworkMode:    netMode,
 		},
 	}
 }
