@@ -56,6 +56,10 @@ func TestDockerClientHappyPaths(t *testing.T) {
 		if body["Name"] != "veil-net" || body["Internal"] != true {
 			t.Errorf("network create body = %v, want Name=veil-net Internal=true", body)
 		}
+		opts, _ := body["Options"].(map[string]any)
+		if opts["com.docker.network.bridge.name"] != "veil-br0" {
+			t.Errorf("network create Options bridge name = %v, want veil-br0", opts)
+		}
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"Id":"net-1"}`))
 	})
@@ -66,6 +70,9 @@ func TestDockerClientHappyPaths(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"Id":"net-1","Name":"veil-net","Internal":true,"Options":{"com.docker.network.bridge.name":"veil-br0"}}`))
+	})
+	mux.HandleFunc(vp+"/networks/missing", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
 	})
 
 	srv := httptest.NewServer(mux)
@@ -110,6 +117,9 @@ func TestDockerClientHappyPaths(t *testing.T) {
 	}
 	if err := cli.RemoveNetwork(ctx, "net-1"); err != nil {
 		t.Fatalf("RemoveNetwork: %v", err)
+	}
+	if err := cli.RemoveNetwork(ctx, "missing"); err != nil {
+		t.Fatalf("RemoveNetwork must tolerate 404: %v", err)
 	}
 }
 
