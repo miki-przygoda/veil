@@ -8,10 +8,19 @@ import (
 	"github.com/miki-przygoda/veil/internal/events"
 )
 
-type fakeSource struct{ ch chan packet }
+type fakeSource struct {
+	ch     chan packet
+	closed bool
+}
 
 func (f *fakeSource) packets() <-chan packet { return f.ch }
-func (f *fakeSource) close() error           { close(f.ch); return nil }
+func (f *fakeSource) close() error {
+	if !f.closed {
+		f.closed = true
+		close(f.ch)
+	}
+	return nil
+}
 
 func TestPacketTapEmitsEvents(t *testing.T) {
 	bus := events.NewBus(16)
@@ -42,6 +51,11 @@ func TestPacketTapEmitsEvents(t *testing.T) {
 	if got[0].Kind != events.KindTraffic || got[0].Source != "10.7.0.2" || got[0].Dest != "10.7.0.3" ||
 		got[0].Protocol != "tcp" || got[0].Detail != "74 bytes" {
 		t.Errorf("event[0] = %+v, want traffic 10.7.0.2->10.7.0.3 tcp 74 bytes", got[0])
+	}
+
+	if got[1].Kind != events.KindTraffic || got[1].Source != "10.7.0.3" || got[1].Dest != "10.7.0.2" ||
+		got[1].Protocol != "udp" || got[1].Detail != "120 bytes" {
+		t.Errorf("event[1] = %+v, want traffic 10.7.0.3->10.7.0.2 udp 120 bytes", got[1])
 	}
 }
 
