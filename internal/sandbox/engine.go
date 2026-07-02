@@ -47,3 +47,6 @@ func (a dockerAdapter) commit(ctx context.Context, id, ref string) (string, erro
 func (a dockerAdapter) removeImage(ctx context.Context, ref string) error {
 	return a.c.RemoveImage(ctx, ref)
 }
+
+// compile-time check that the adapter satisfies the engine interface.
+var _ engine = dockerAdapter{}
