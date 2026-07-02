@@ -105,6 +105,9 @@ func TestBuildSpecJSONWireFormat(t *testing.T) {
 	if s, _ := tmpfs["/tmp"].(string); !strings.Contains(s, "noexec") || !strings.Contains(s, "nosuid") || !strings.Contains(s, "nodev") {
 		t.Errorf("wire Tmpfs[/tmp] = %q, want noexec,nosuid,nodev", s)
 	}
+	if s, _ := tmpfs["/run"].(string); !strings.Contains(s, "noexec") || !strings.Contains(s, "nosuid") || !strings.Contains(s, "nodev") {
+		t.Errorf("wire Tmpfs[/run] = %q, want noexec,nosuid,nodev", s)
+	}
 	if !jsonArrayHasString(hc["MaskedPaths"], "/proc/kcore") || !jsonArrayHasString(hc["MaskedPaths"], "/sys/firmware") {
 		t.Errorf("wire MaskedPaths = %v, want /proc/kcore + /sys/firmware", hc["MaskedPaths"])
 	}

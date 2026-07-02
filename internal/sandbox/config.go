@@ -21,6 +21,7 @@ type Config struct {
 
 // Docker's standard masked/read-only /proc & /sys paths, set explicitly so
 // containment is Veil-owned rather than reliant on daemon defaults.
+// Treat both slices as read-only — buildSpec shares the backing array; never append.
 var maskedPaths = []string{
 	"/proc/asound", "/proc/acpi", "/proc/kcore", "/proc/keys",
 	"/proc/latency_stats", "/proc/timer_list", "/proc/timer_stats",
@@ -35,7 +36,7 @@ var readonlyPaths = []string{
 // no workload, modest resource caps. Override Image with a digest to pin.
 func DefaultConfig() Config {
 	return Config{
-		Image:     "alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc",
+		Image:     "alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc", // digest-pinned; refresh on each alpine:3.20 security release
 		Cmd:       []string{"sleep", "infinity"},
 		Memory:    512 << 20, // 512 MiB
 		PidsLimit: 256,
