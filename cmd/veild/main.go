@@ -1,9 +1,10 @@
 // Command veild is Veil's host-side control plane — the "outside" of the world.
 //
-// It wires the spine together: a sandbox (container-backed by default, stub
-// fallback), synthetic residents, a host-side tap (packet by default, stub
-// fallback), and the live observation feed. Run it and open http://localhost:8080
-// to watch events stream out of the world in real time.
+// It wires the spine together: a sandbox (container-backed by default;
+// -backend=stub is the explicit zero-isolation dev mode), synthetic residents,
+// a host-side tap (packet by default, stub fallback), and the live observation
+// feed. Run it and open http://localhost:8080 to watch events stream out of the
+// world in real time.
 package main
 
 import (
@@ -33,7 +34,7 @@ func selectSandbox(ctx context.Context, backend, network string, bus *events.Bus
 		return sandbox.NewStub("world-01", bus), nil
 	}
 	cfg := sandbox.DefaultConfig()
-	cfg.Network = network
+	cfg.Network = network // "" keeps NetworkMode:none
 	c, err := sandbox.NewContainer("world-01", bus, cfg)
 	if err == nil {
 		err = c.Ping(ctx)
