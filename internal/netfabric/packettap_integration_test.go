@@ -33,12 +33,15 @@ func TestPacketTapLiveCapture(t *testing.T) {
 	defer cancel()
 	go tap.Run(ctx, bus)
 
-	select {
-	case e := <-feed:
-		if e.Kind != events.KindTraffic {
-			t.Errorf("event kind = %s, want traffic", e.Kind)
+	for {
+		select {
+		case e := <-feed:
+			if e.Kind == events.KindTraffic {
+				return // captured a packet — success
+			}
+			// ignore non-traffic events; keep waiting
+		case <-ctx.Done():
+			t.Fatal("no KindTraffic captured within timeout (is the bridge carrying traffic?)")
 		}
-	case <-ctx.Done():
-		t.Fatal("no traffic captured within timeout (is the bridge carrying traffic?)")
 	}
 }

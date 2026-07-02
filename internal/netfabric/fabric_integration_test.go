@@ -22,11 +22,14 @@ func TestFabricIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	t.Cleanup(func() { _ = f.Teardown(context.Background()) })
+	// Sole owner of teardown (best-effort, asserted). RemoveNetwork is
+	// 404-tolerant, so this is safe even if the network is already gone.
+	t.Cleanup(func() {
+		if err := f.Teardown(context.Background()); err != nil {
+			t.Errorf("Teardown: %v", err)
+		}
+	})
 	if !n.Internal {
 		t.Errorf("network Internal = false, want true (no egress)")
-	}
-	if err := f.Teardown(ctx); err != nil {
-		t.Fatalf("Teardown: %v", err)
 	}
 }
