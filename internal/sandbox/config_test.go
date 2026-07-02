@@ -3,6 +3,7 @@ package sandbox
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -96,6 +97,25 @@ func TestBuildSpecJSONWireFormat(t *testing.T) {
 	}
 	if n, _ := hc["Memory"].(float64); n <= 0 {
 		t.Errorf("wire HostConfig.Memory = %v, want > 0", hc["Memory"])
+	}
+	if m["User"] != "65534:65534" {
+		t.Errorf("wire User = %v, want 65534:65534 (non-root)", m["User"])
+	}
+	tmpfs, _ := hc["Tmpfs"].(map[string]any)
+	if s, _ := tmpfs["/tmp"].(string); !strings.Contains(s, "noexec") || !strings.Contains(s, "nosuid") || !strings.Contains(s, "nodev") {
+		t.Errorf("wire Tmpfs[/tmp] = %q, want noexec,nosuid,nodev", s)
+	}
+	if !jsonArrayHasString(hc["MaskedPaths"], "/proc/kcore") || !jsonArrayHasString(hc["MaskedPaths"], "/sys/firmware") {
+		t.Errorf("wire MaskedPaths = %v, want /proc/kcore + /sys/firmware", hc["MaskedPaths"])
+	}
+	if !jsonArrayHasString(hc["ReadonlyPaths"], "/proc/sysrq-trigger") {
+		t.Errorf("wire ReadonlyPaths = %v, want /proc/sysrq-trigger", hc["ReadonlyPaths"])
+	}
+	if n, _ := hc["CpuQuota"].(float64); n <= 0 {
+		t.Errorf("wire CpuQuota = %v, want > 0", hc["CpuQuota"])
+	}
+	if n, _ := hc["CpuPeriod"].(float64); n != 100000 {
+		t.Errorf("wire CpuPeriod = %v, want 100000", hc["CpuPeriod"])
 	}
 }
 
