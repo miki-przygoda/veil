@@ -75,10 +75,22 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handler wraps the mux with a Content-Security-Policy so the dashboard runs no
+// inline script and can't be used to exfiltrate: even if an attacker-controlled
+// field slipped past output-encoding, default-src 'self' blocks inline execution
+// and off-origin loads. Requires the dashboard's script/style to be same-origin
+// files (web/app.js, web/app.css), which the FileServer already serves.
+func (s *Server) handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'")
+		s.mux.ServeHTTP(w, r)
+	})
+}
+
 // Run starts the HTTP server and blocks until ctx is cancelled, then shuts down
 // gracefully.
 func (s *Server) Run(ctx context.Context) error {
-	srv := &http.Server{Addr: s.addr, Handler: s.mux}
+	srv := &http.Server{Addr: s.addr, Handler: s.handler()}
 
 	go func() {
 		<-ctx.Done()
