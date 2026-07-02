@@ -137,6 +137,35 @@ func TestBuildSpecNetwork(t *testing.T) {
 	}
 }
 
+func TestBuildSpecOptInControls(t *testing.T) {
+	// Absent by default.
+	def := DefaultConfig().buildSpec("w")
+	if def.HostConfig.UsernsMode != "" {
+		t.Errorf("default UsernsMode = %q, want empty (opt-in)", def.HostConfig.UsernsMode)
+	}
+	for _, so := range def.HostConfig.SecurityOpt {
+		if strings.HasPrefix(so, "seccomp=") || strings.HasPrefix(so, "apparmor=") {
+			t.Errorf("default SecurityOpt has %q; seccomp/apparmor must be opt-in", so)
+		}
+	}
+
+	// Present when set.
+	cfg := DefaultConfig()
+	cfg.UsernsMode = "private"
+	cfg.SeccompJSON = []byte(`{"defaultAction":"SCMP_ACT_ERRNO"}`)
+	cfg.AppArmor = "docker-default"
+	spec := cfg.buildSpec("w")
+	if spec.HostConfig.UsernsMode != "private" {
+		t.Errorf("UsernsMode = %q, want private", spec.HostConfig.UsernsMode)
+	}
+	if !slices.Contains(spec.HostConfig.SecurityOpt, "apparmor=docker-default") {
+		t.Errorf("SecurityOpt = %v, want apparmor=docker-default", spec.HostConfig.SecurityOpt)
+	}
+	if !slices.Contains(spec.HostConfig.SecurityOpt, `seccomp={"defaultAction":"SCMP_ACT_ERRNO"}`) {
+		t.Errorf("SecurityOpt = %v, want the seccomp profile", spec.HostConfig.SecurityOpt)
+	}
+}
+
 func jsonArrayHasString(v any, want string) bool {
 	arr, ok := v.([]any)
 	if !ok {

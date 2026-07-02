@@ -10,13 +10,16 @@ const (
 
 // Config is the contained world's shape. Start from DefaultConfig and override.
 type Config struct {
-	Image     string   // base image ref; must be present locally (no auto-pull)
-	Cmd       []string // keepalive/workload command
-	Memory    int64    // hard memory cap, bytes
-	PidsLimit int64    // max processes
-	Network   string   // "" => no network (NetworkMode:none); else the network to join
-	User      string   // "" => "65534:65534" (non-root)
-	CPUs      float64  // 0  => 1.0 CPU
+	Image       string   // base image ref; must be present locally (no auto-pull)
+	Cmd         []string // keepalive/workload command
+	Memory      int64    // hard memory cap, bytes
+	PidsLimit   int64    // max processes
+	Network     string   // "" => no network (NetworkMode:none); else the network to join
+	User        string   // "" => "65534:65534" (non-root)
+	CPUs        float64  // 0  => 1.0 CPU
+	UsernsMode  string   // opt-in user-namespace mode (e.g. "private"); default off
+	SeccompJSON []byte   // opt-in seccomp profile JSON; default off (daemon default applies)
+	AppArmor    string   // opt-in apparmor profile (e.g. "docker-default"); default off
 }
 
 // Docker's standard masked/read-only /proc & /sys paths, set explicitly so
@@ -78,6 +81,14 @@ func (c Config) buildSpec(world string) docker.CreateSpec {
 		netMode = c.Network
 	}
 
+	secOpt := []string{"no-new-privileges:true"}
+	if c.AppArmor != "" {
+		secOpt = append(secOpt, "apparmor="+c.AppArmor)
+	}
+	if len(c.SeccompJSON) > 0 {
+		secOpt = append(secOpt, "seccomp="+string(c.SeccompJSON))
+	}
+
 	return docker.CreateSpec{
 		Name:            "veil-" + world,
 		User:            user,
@@ -89,7 +100,8 @@ func (c Config) buildSpec(world string) docker.CreateSpec {
 			ReadonlyRootfs: true,
 			Tmpfs:          map[string]string{"/tmp": "noexec,nosuid,nodev", "/run": "noexec,nosuid,nodev"},
 			CapDrop:        []string{"ALL"},
-			SecurityOpt:    []string{"no-new-privileges:true"},
+			SecurityOpt:    secOpt,
+			UsernsMode:     c.UsernsMode,
 			PidsLimit:      pids,
 			Memory:         mem,
 			NetworkMode:    netMode,
