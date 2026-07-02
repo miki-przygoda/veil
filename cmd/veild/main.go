@@ -1,14 +1,16 @@
 // Command veild is Veil's host-side control plane — the "outside" of the world.
 //
-// It wires the spine together: a sandbox (container-backed by default, stub
-// fallback), synthetic residents, a host-side tap (packet by default, stub
-// fallback), and the live observation feed. Run it and open http://localhost:8080
-// to watch events stream out of the world in real time.
+// It wires the spine together: a sandbox (container-backed by default;
+// -backend=stub is the explicit zero-isolation dev mode), synthetic residents,
+// a host-side tap (packet by default, stub fallback), and the live observation
+// feed. Run it and open http://localhost:8080 to watch events stream out of the
+// world in real time.
 package main
 
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -23,13 +25,13 @@ import (
 	"github.com/miki-przygoda/veil/internal/viz"
 )
 
-// selectSandbox picks the isolation backend. The container backend is the
-// default; if the Docker daemon is unreachable it logs, emits an observable
-// KindSystem event, and falls back to the stub so the demo still boots.
-// network is the Docker network the box should join ("" keeps it isolated).
-func selectSandbox(ctx context.Context, backend, network string, bus *events.Bus, log *slog.Logger) sandbox.Sandbox {
+// selectSandbox picks the isolation backend. The container backend REQUIRES a
+// reachable Docker daemon: if it is unavailable, this returns an error and veild
+// exits (fail closed) rather than silently degrading to the isolation-free stub.
+// -backend=stub is the explicit, opt-in, zero-isolation dev mode.
+func selectSandbox(ctx context.Context, backend, network string, bus *events.Bus, log *slog.Logger) (sandbox.Sandbox, error) {
 	if backend == "stub" {
-		return sandbox.NewStub("world-01", bus)
+		return sandbox.NewStub("world-01", bus), nil
 	}
 	cfg := sandbox.DefaultConfig()
 	cfg.Network = network // "" keeps NetworkMode:none
@@ -38,14 +40,10 @@ func selectSandbox(ctx context.Context, backend, network string, bus *events.Bus
 		err = c.Ping(ctx)
 	}
 	if err != nil {
-		log.Warn("docker unavailable, falling back to stub backend", "err", err)
-		e := events.New(events.KindSystem, "veild", "backend fallback")
-		e.Detail = "container backend unavailable: " + err.Error() + "; using stub"
-		bus.Publish(e)
-		return sandbox.NewStub("world-01", bus)
+		return nil, fmt.Errorf("container backend requires a reachable Docker daemon: %w", err)
 	}
 	log.Info("using container backend", "network", network)
-	return c
+	return c, nil
 }
 
 // selectTap picks the tap backend. The packet tap captures real traffic off the
@@ -106,7 +104,12 @@ func main() {
 	}
 
 	// The contained world.
-	box := selectSandbox(ctx, *backend, netName, bus, log)
+	box, err := selectSandbox(ctx, *backend, netName, bus, log)
+	if err != nil {
+		log.Error("sandbox backend unavailable", "err", err)
+		teardownFabric()
+		os.Exit(1)
+	}
 	if err := box.Create(ctx); err != nil {
 		log.Error("sandbox create", "err", err)
 		teardownFabric()

@@ -3,6 +3,7 @@ package sandbox
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -97,6 +98,28 @@ func TestBuildSpecJSONWireFormat(t *testing.T) {
 	if n, _ := hc["Memory"].(float64); n <= 0 {
 		t.Errorf("wire HostConfig.Memory = %v, want > 0", hc["Memory"])
 	}
+	if m["User"] != "65534:65534" {
+		t.Errorf("wire User = %v, want 65534:65534 (non-root)", m["User"])
+	}
+	tmpfs, _ := hc["Tmpfs"].(map[string]any)
+	if s, _ := tmpfs["/tmp"].(string); !strings.Contains(s, "noexec") || !strings.Contains(s, "nosuid") || !strings.Contains(s, "nodev") {
+		t.Errorf("wire Tmpfs[/tmp] = %q, want noexec,nosuid,nodev", s)
+	}
+	if s, _ := tmpfs["/run"].(string); !strings.Contains(s, "noexec") || !strings.Contains(s, "nosuid") || !strings.Contains(s, "nodev") {
+		t.Errorf("wire Tmpfs[/run] = %q, want noexec,nosuid,nodev", s)
+	}
+	if !jsonArrayHasString(hc["MaskedPaths"], "/proc/kcore") || !jsonArrayHasString(hc["MaskedPaths"], "/sys/firmware") {
+		t.Errorf("wire MaskedPaths = %v, want /proc/kcore + /sys/firmware", hc["MaskedPaths"])
+	}
+	if !jsonArrayHasString(hc["ReadonlyPaths"], "/proc/sysrq-trigger") {
+		t.Errorf("wire ReadonlyPaths = %v, want /proc/sysrq-trigger", hc["ReadonlyPaths"])
+	}
+	if n, _ := hc["CpuQuota"].(float64); n <= 0 {
+		t.Errorf("wire CpuQuota = %v, want > 0", hc["CpuQuota"])
+	}
+	if n, _ := hc["CpuPeriod"].(float64); n != 100000 {
+		t.Errorf("wire CpuPeriod = %v, want 100000", hc["CpuPeriod"])
+	}
 }
 
 func TestBuildSpecNetwork(t *testing.T) {
@@ -111,6 +134,38 @@ func TestBuildSpecNetwork(t *testing.T) {
 	joined := cfg.buildSpec("w")
 	if joined.NetworkDisabled != false || joined.HostConfig.NetworkMode != "veil-net" {
 		t.Errorf("joined: NetworkDisabled=%v NetworkMode=%q, want false/veil-net", joined.NetworkDisabled, joined.HostConfig.NetworkMode)
+	}
+}
+
+func TestBuildSpecOptInControls(t *testing.T) {
+	// Absent by default.
+	def := DefaultConfig().buildSpec("w")
+	if def.HostConfig.UsernsMode != "" {
+		t.Errorf("default UsernsMode = %q, want empty (opt-in)", def.HostConfig.UsernsMode)
+	}
+	for _, so := range def.HostConfig.SecurityOpt {
+		if strings.HasPrefix(so, "seccomp=") || strings.HasPrefix(so, "apparmor=") {
+			t.Errorf("default SecurityOpt has %q; seccomp/apparmor must be opt-in", so)
+		}
+	}
+
+	// Present when set.
+	cfg := DefaultConfig()
+	cfg.UsernsMode = "private"
+	cfg.SeccompJSON = []byte(`{"defaultAction":"SCMP_ACT_ERRNO"}`)
+	cfg.AppArmor = "docker-default"
+	spec := cfg.buildSpec("w")
+	if spec.HostConfig.UsernsMode != "private" {
+		t.Errorf("UsernsMode = %q, want private", spec.HostConfig.UsernsMode)
+	}
+	if !slices.Contains(spec.HostConfig.SecurityOpt, "apparmor=docker-default") {
+		t.Errorf("SecurityOpt = %v, want apparmor=docker-default", spec.HostConfig.SecurityOpt)
+	}
+	if !slices.Contains(spec.HostConfig.SecurityOpt, `seccomp={"defaultAction":"SCMP_ACT_ERRNO"}`) {
+		t.Errorf("SecurityOpt = %v, want the seccomp profile", spec.HostConfig.SecurityOpt)
+	}
+	if !slices.Contains(spec.HostConfig.SecurityOpt, "no-new-privileges:true") {
+		t.Errorf("SecurityOpt = %v; no-new-privileges:true must survive opt-in controls", spec.HostConfig.SecurityOpt)
 	}
 }
 

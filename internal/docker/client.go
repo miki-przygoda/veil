@@ -32,6 +32,7 @@ func (e *engineError) Error() string {
 type CreateSpec struct {
 	Name string `json:"-"`
 
+	User            string            `json:"User,omitempty"`
 	Image           string            `json:"Image"`
 	Cmd             []string          `json:"Cmd,omitempty"`
 	Labels          map[string]string `json:"Labels,omitempty"`
@@ -47,6 +48,12 @@ type HostConfig struct {
 	PidsLimit      int64             `json:"PidsLimit,omitempty"`
 	Memory         int64             `json:"Memory,omitempty"`
 	NetworkMode    string            `json:"NetworkMode,omitempty"`
+	MaskedPaths    []string          `json:"MaskedPaths,omitempty"`
+	ReadonlyPaths  []string          `json:"ReadonlyPaths,omitempty"`
+	UsernsMode     string            `json:"UsernsMode,omitempty"`
+	CpuPeriod      int64             `json:"CpuPeriod,omitempty"`
+	CpuQuota       int64             `json:"CpuQuota,omitempty"`
+	Sysctls        map[string]string `json:"Sysctls,omitempty"` // reserved hook; buildSpec does not set it yet
 }
 
 // dockerAPIVersion is the pinned Engine API version. Docker daemons reject
