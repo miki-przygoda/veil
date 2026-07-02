@@ -6,4 +6,7 @@ services:
     image: veil:dev
     ports:
       - "8080:8080"
+    # veild drives Docker on the host; without this the container backend fails closed.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
