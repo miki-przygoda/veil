@@ -62,6 +62,7 @@ func TestOffWorldName(t *testing.T) {
 		{"api.veil.local", false},  // zone member
 		{"api.veil.local.", false}, // trailing dot
 		{"WEB.VEIL.LOCAL", false},  // case-insensitive
+		{"veil.local", false},      // zone apex itself
 		{"pastebin.com", true},     // external
 		{"8.8.8.8", true},          // IP literal counts as off-world
 		{"", false},                // nothing to resolve

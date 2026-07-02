@@ -10,6 +10,8 @@ import (
 // the boundary before the value reaches an events.Event ([C1] defense in depth;
 // the dashboard also output-encodes). "Printable ASCII" is NOT enough — '<' is
 // printable — so this is an allowlist, not a control-char filter.
+// Note: max bounds the INPUT byte length; the OUTPUT may be longer because
+// non-allowlisted bytes expand to \xNN (4 chars each).
 func safeField(s string, max int) string {
 	if len(s) > max {
 		s = s[:max]

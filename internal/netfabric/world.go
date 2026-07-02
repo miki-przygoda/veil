@@ -12,7 +12,7 @@ type World struct {
 	Subnet  *net.IPNet        // veil-net CIDR (nil on the stub/no-Docker path)
 	Gateway net.IP            // gateway == sink IP; in-world infra
 	Zones   []string          // served DNS suffixes, e.g. ".veil.local"
-	Names   map[string]net.IP // static A records for world names (FQDN -> IPv4)
+	Names   map[string]net.IP // static A records; keys MUST be lowercase FQDNs (lookups lowercase the query, not the key)
 }
 
 // metadataIPs are cloud metadata endpoints — the canonical SSRF/escape target,
