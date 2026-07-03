@@ -98,6 +98,8 @@ func startResolver(ctx context.Context, world netfabric.World, gateway string, b
 		return false
 	}
 	go func() {
+		// Serve owns conn and closes it when it returns (via its own shutdown
+		// goroutine, on ctx-cancel or on error return), so we don't close it here.
 		if err := netfabric.NewResolver(world, bus).Serve(ctx, conn); err != nil && ctx.Err() == nil {
 			log.Error("resolver", "err", err)
 		}
