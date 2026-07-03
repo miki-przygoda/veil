@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 )
 
@@ -41,4 +42,35 @@ func acceptLoop(ctx context.Context, ln net.Listener, handle func(net.Conn)) err
 			_ = conn.Close() // over the cap: drop
 		}
 	}
+}
+
+// svc is a bound-and-ready service: its listener is created by run's caller at the
+// declared port, then run(ctx, ln) serves until ctx is cancelled.
+type svc struct {
+	port int
+	run  func(ctx context.Context, ln net.Listener) error
+}
+
+// buildServices maps parsed specs to runnable services, currying hostname in.
+// Unknown protocols error (they should have been rejected by parseServices, but
+// this is the authoritative dispatch).
+func buildServices(specs []serviceSpec, hostname string) ([]svc, error) {
+	var out []svc
+	for _, s := range specs {
+		var run func(ctx context.Context, ln net.Listener) error
+		switch s.proto {
+		case "http":
+			run = func(ctx context.Context, ln net.Listener) error { return serveHTTP(ctx, ln, hostname) }
+		case "smtp":
+			run = func(ctx context.Context, ln net.Listener) error { return serveSMTP(ctx, ln, hostname) }
+		case "imap":
+			run = func(ctx context.Context, ln net.Listener) error { return serveIMAP(ctx, ln, hostname) }
+		case "ssh":
+			run = func(ctx context.Context, ln net.Listener) error { return serveSSH(ctx, ln, hostname) }
+		default:
+			return nil, fmt.Errorf("unsupported proto %q", s.proto)
+		}
+		out = append(out, svc{port: s.port, run: run})
+	}
+	return out, nil
 }

@@ -44,3 +44,19 @@ func TestAcceptLoopEchoesAndStops(t *testing.T) {
 		t.Fatal("acceptLoop did not return after cancel")
 	}
 }
+
+func TestBuildServices(t *testing.T) {
+	svcs, err := buildServices([]serviceSpec{{"http", 80}, {"ssh", 22}}, "h")
+	if err != nil {
+		t.Fatalf("buildServices: %v", err)
+	}
+	if len(svcs) != 2 || svcs[0].port != 80 || svcs[1].port != 22 {
+		t.Errorf("svcs = %+v", svcs)
+	}
+	if svcs[0].run == nil || svcs[1].run == nil {
+		t.Error("run funcs must be non-nil")
+	}
+	if _, err := buildServices([]serviceSpec{{"smb", 445}}, "h"); err == nil {
+		t.Error("unknown proto must error")
+	}
+}
