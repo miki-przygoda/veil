@@ -74,9 +74,22 @@ elsewhere it degrades off with an observable `KindSystem` event and escape
 (`VEIL_DNS_IT`).
 
 ```sh
-make build      # binaries -> bin/veild, bin/veil-agent
+make build      # binaries -> bin/veild, bin/veil-agent, bin/veil-resident
 make test       # run tests
 make docker     # build the container image
+```
+
+### Residents (synthetic LAN hosts)
+
+`cmd/veil-resident` is a stdlib-only guest binary that makes a container *be* a
+believable host on `veil-net`: it serves probes (HTTP/SMTP/IMAP/SSH) and generates
+ambient client traffic (DNS/HTTP/SMTP). It knows protocols, not topology — the
+world roster (a later sub-project) assigns each resident its name, IP, and role via
+flags. Run one by hand:
+
+```sh
+make resident-image
+docker run --rm veil-resident:dev -serve=http:80,ssh:22 -hostname=web.veil.local
 ```
 
 ## Layout
