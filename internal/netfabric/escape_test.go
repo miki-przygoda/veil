@@ -2,6 +2,7 @@ package netfabric
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,7 +29,7 @@ func TestClassify(t *testing.T) {
 		{"in-world ip", trafficTo("172.20.0.5", "172.20.0.9", "tcp", "capture"), false, ""},
 		{"metadata ip", trafficTo("172.20.0.5", "169.254.169.254", "tcp", "capture"), true, "egress-attempt"},
 		{"sink connect", trafficTo("172.20.0.5", "172.20.0.1", "tcp", "sink connect"), true, "honeypot-hit"},
-		{"stub dns w/ IP dest", trafficTo("10.0.0.5", "10.0.0.9", "dns", "capture"), true, "egress-attempt"}, // IP branch, world has subnet
+		{"stub dns w/ IP dest", trafficTo("10.0.0.5", "10.0.0.9", "dns", "capture"), true, "egress-attempt"}, // 10.0.0.9 is off the 172.20.0.0/16 world subnet -> egress-attempt
 		{"resident noise", trafficTo("resident-01", "", "http", "GET /feed"), false, ""},
 		{"own escape (no loop)", func() events.Event { e := trafficTo("x", "8.8.8.8", "tcp", "egress-attempt"); e.Kind = events.KindEscape; return e }(), false, ""},
 	}
@@ -56,6 +57,28 @@ func TestClassifyStubSafety(t *testing.T) {
 	c := NewClassifier(World{})
 	if _, ok := c.classify(trafficTo("10.0.0.5", "10.0.0.9", "dns", "capture")); ok {
 		t.Error("Subnet==nil must disable the IP vector")
+	}
+}
+
+func TestClassifierThrottleDedup(t *testing.T) {
+	c := NewClassifier(testWorld(t))
+	seen := map[string]int{}
+	esc := events.New(events.KindEscape, "172.20.0.5", "external-dns")
+	esc.Detail = "resolve evil.example (non-world)"
+
+	emits := 0
+	var last events.Event
+	for i := 0; i < 26; i++ { // 26 attempts of the SAME (source, action)
+		if out, ok := c.throttle(seen, esc); ok {
+			emits++
+			last = out
+		}
+	}
+	if emits != 2 { // first emit + one rollup at the 25th
+		t.Fatalf("emits over 26 identical attempts = %d, want 2 ([M4]: never one-per-attempt)", emits)
+	}
+	if !strings.Contains(last.Detail, "x25") {
+		t.Errorf("rollup Detail = %q, want it to contain \"x25\"", last.Detail)
 	}
 }
 

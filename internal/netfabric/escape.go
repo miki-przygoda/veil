@@ -55,14 +55,37 @@ func escapeFrom(src events.Event, action, detail string) events.Event {
 	return e
 }
 
+const rollupEvery = 25
+
+// throttle applies per-(source|action) dedup/rate-limiting ([M4]): it returns
+// (event, true) for the FIRST hit of a key and for every rollupEvery-th hit
+// thereafter (a summarised "(xN)" rollup), and (zero, false) otherwise — so a
+// subject looping the same vector yields one escape + periodic rollups, never
+// one KindEscape per attempt. seen is caller-owned so Run keeps a single map.
+func (c *Classifier) throttle(seen map[string]int, esc events.Event) (events.Event, bool) {
+	key := esc.Source + "|" + esc.Action
+	seen[key]++
+	switch {
+	case seen[key] == 1:
+		return esc, true
+	case seen[key]%rollupEvery == 0:
+		roll := esc
+		roll.Detail = fmt.Sprintf("%s (x%d)", esc.Detail, seen[key])
+		return roll, true
+	default:
+		return events.Event{}, false
+	}
+}
+
 // Run consumes the bus until ctx is cancelled, publishing a KindEscape per
 // off-world signal with per-source/per-vector dedup + rate rollup ([M4]): the
 // first of each (source, vector) emits immediately; further hits are summarised
-// as an "N attempts" rollup rather than one event per attempt.
+// as an "N attempts" rollup rather than one event per attempt. Dedup counters
+// live for the lifetime of this goroutine, so a fresh Run per scenario
+// (Snapshot/Reset) yields fresh counts — that is the intended reset mechanism.
 func (c *Classifier) Run(ctx context.Context, bus *events.Bus) error {
 	feed, unsub := bus.Subscribe()
 	defer unsub()
-	const rollupEvery = 25
 	seen := map[string]int{}
 	for {
 		select {
@@ -76,15 +99,8 @@ func (c *Classifier) Run(ctx context.Context, bus *events.Bus) error {
 			if !hit {
 				continue
 			}
-			key := esc.Source + "|" + esc.Action
-			seen[key]++
-			switch {
-			case seen[key] == 1:
-				bus.Publish(esc)
-			case seen[key]%rollupEvery == 0:
-				roll := esc
-				roll.Detail = fmt.Sprintf("%s (x%d)", esc.Detail, seen[key])
-				bus.Publish(roll)
+			if out, emit := c.throttle(seen, esc); emit {
+				bus.Publish(out)
 			}
 		}
 	}
