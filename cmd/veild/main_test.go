@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"testing"
 
 	"github.com/miki-przygoda/veil/internal/events"
@@ -14,7 +15,7 @@ import (
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func TestSelectSandboxStub(t *testing.T) {
-	box, err := selectSandbox(context.Background(), "stub", "", events.NewBus(8), quietLog())
+	box, err := selectSandbox(context.Background(), "stub", "", nil, events.NewBus(8), quietLog())
 	if err != nil {
 		t.Fatalf("stub backend: unexpected err %v", err)
 	}
@@ -26,7 +27,7 @@ func TestSelectSandboxStub(t *testing.T) {
 func TestSelectSandboxContainerFailClosed(t *testing.T) {
 	// Docker unreachable + container backend requested => error, no fallback.
 	t.Setenv("DOCKER_HOST", "unix:///nonexistent/veil-test-does-not-exist.sock")
-	box, err := selectSandbox(context.Background(), "container", "", events.NewBus(8), quietLog())
+	box, err := selectSandbox(context.Background(), "container", "", nil, events.NewBus(8), quietLog())
 	if err == nil {
 		t.Fatal("container backend with no Docker: want error (fail closed), got nil")
 	}
@@ -59,5 +60,54 @@ func TestSelectTapPacketFallback(t *testing.T) {
 		}
 	default:
 		t.Error("no KindSystem tap-fallback event published")
+	}
+}
+
+func TestBuildWorld(t *testing.T) {
+	w := buildWorld("172.20.0.0/16", "172.20.0.1")
+	if w.Subnet == nil || w.Subnet.String() != "172.20.0.0/16" {
+		t.Errorf("subnet = %v, want 172.20.0.0/16", w.Subnet)
+	}
+	// 8.8.8.8 is not in 172.20.0.0/16 — off-world (cannot call unexported offWorldIP cross-pkg).
+	if w.Subnet.Contains(net.ParseIP("8.8.8.8")) {
+		t.Error("8.8.8.8 should be off-world (not in subnet)")
+	}
+	// Gateway must be recorded as an in-world address.
+	if !w.Gateway.Equal(net.ParseIP("172.20.0.1")) {
+		t.Errorf("gateway = %v, want 172.20.0.1", w.Gateway)
+	}
+}
+
+func TestBuildWorldEmpty(t *testing.T) {
+	w := buildWorld("", "") // stub/no-Docker path
+	if w.Subnet != nil {
+		t.Error("empty subnet must yield nil Subnet (disables IP vector)")
+	}
+}
+
+func TestStartResolverBindFailureFallsBack(t *testing.T) {
+	bus := events.NewBus(8)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// TEST-NET-1 is not a local address, so ListenPacket must fail.
+	if started := startResolver(ctx, netfabric.World{}, "192.0.2.1", bus, quietLog()); started {
+		t.Error("startResolver should report not-started on bind failure")
+	}
+	select {
+	case e := <-feed:
+		if e.Kind != events.KindSystem {
+			t.Errorf("fallback kind = %s, want system", e.Kind)
+		}
+	default:
+		t.Error("no KindSystem fallback event published")
+	}
+}
+
+func TestSelectSandboxStubIgnoresDNS(t *testing.T) {
+	box, err := selectSandbox(context.Background(), "stub", "", []string{"1.2.3.4"}, events.NewBus(4), quietLog())
+	if err != nil || box == nil {
+		t.Fatalf("stub backend: box=%v err=%v", box, err)
 	}
 }
