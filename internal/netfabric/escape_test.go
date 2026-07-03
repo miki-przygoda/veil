@@ -29,7 +29,9 @@ func TestClassify(t *testing.T) {
 		{"in-world ip", trafficTo("172.20.0.5", "172.20.0.9", "tcp", "capture"), false, ""},
 		{"metadata ip", trafficTo("172.20.0.5", "169.254.169.254", "tcp", "capture"), true, "egress-attempt"},
 		{"sink connect", trafficTo("172.20.0.5", "172.20.0.1", "tcp", "sink connect"), true, "honeypot-hit"},
-		{"stub dns w/ IP dest", trafficTo("10.0.0.5", "10.0.0.9", "dns", "capture"), true, "egress-attempt"}, // 10.0.0.9 is off the 172.20.0.0/16 world subnet -> egress-attempt
+		// testWorld subnet = 172.20.0.0/16; source gate: only in-subnet sources fire egress-attempt.
+		{"in-world src, off-world ip dest (dns proto)", trafficTo("172.20.0.5", "10.0.0.9", "dns", "capture"), true, "egress-attempt"},
+		{"stubtap off-subnet source suppressed", trafficTo("10.0.0.5", "8.8.8.8", "tcp", "capture"), false, ""},
 		{"resident noise", trafficTo("resident-01", "", "http", "GET /feed"), false, ""},
 		{"own escape (no loop)", func() events.Event {
 			e := trafficTo("x", "8.8.8.8", "tcp", "egress-attempt")

@@ -41,6 +41,15 @@ func (c *Classifier) classify(e events.Event) (events.Event, bool) {
 	if c.world.Subnet == nil {
 		return events.Event{}, false
 	}
+	// Escape = an in-world subject reaching off-world. Requiring an in-subnet
+	// Source suppresses StubTap's synthetic 10.0.0.x traffic (which appears when
+	// the container backend runs with a stub-tap fallback) while a real subject
+	// (always in the veil-net subnet) still flags. A non-IP/off-subnet Source is
+	// not the contained subject egressing.
+	src := net.ParseIP(e.Source)
+	if src == nil || !c.world.Subnet.Contains(src) {
+		return events.Event{}, false
+	}
 	if c.world.offWorldIP(net.ParseIP(e.Dest)) {
 		return escapeFrom(e, "egress-attempt", "dst "+e.Dest+" off-world"), true
 	}
