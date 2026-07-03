@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/miki-przygoda/veil/internal/events"
@@ -18,18 +19,38 @@ const (
 // subject's originally-intended TCP port (recovered via SO_ORIGINAL_DST on
 // Linux; a stub in tests). gateway is the sink IP, echoed as the fact Dest.
 type Sink struct {
-	bus     *events.Bus
-	gateway string
-	orig    func(net.Conn) int
+	bus       *events.Bus
+	gateway   string
+	orig      func(net.Conn) int
+	overloaded atomic.Bool
 }
 
 func NewSink(bus *events.Bus, gateway string, orig func(net.Conn) int) *Sink {
 	return &Sink{bus: bus, gateway: gateway, orig: orig}
 }
 
+// reportOverload emits a single "honeypot overloaded" KindSystem per overload
+// episode. The latch re-arms when a slot is next acquired (see serve), so a
+// sustained flood yields one event, not one per rejected connection ([M6]).
+func (s *Sink) reportOverload() {
+	if s.overloaded.CompareAndSwap(false, true) {
+		e := events.New(events.KindSystem, "veild", "honeypot overloaded")
+		e.Detail = fmt.Sprintf("connection cap %d reached; dropping", sinkMaxConns)
+		s.bus.Publish(e)
+	}
+}
+
 // serve accepts until ctx is cancelled, bounding concurrency ([M6]).
 func (s *Sink) serve(ctx context.Context, ln net.Listener) {
-	go func() { <-ctx.Done(); _ = ln.Close() }()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = ln.Close()
+		case <-done:
+		}
+	}()
 	sem := make(chan struct{}, sinkMaxConns)
 	for {
 		conn, err := ln.Accept()
@@ -38,13 +59,15 @@ func (s *Sink) serve(ctx context.Context, ln net.Listener) {
 		}
 		select {
 		case sem <- struct{}{}:
+			s.overloaded.Store(false) // re-arm: we're below cap again
 			go func() { defer func() { <-sem }(); s.handle(conn) }()
 		default:
-			// Over the cap: reset + ONE KindSystem, never a per-conn flood ([M6]).
+			// Over the cap: RST + ONE KindSystem per episode, never per-conn ([M6]).
+			if tc, ok := conn.(*net.TCPConn); ok {
+				_ = tc.SetLinger(0)
+			}
 			_ = conn.Close()
-			e := events.New(events.KindSystem, "veild", "honeypot overloaded")
-			e.Detail = fmt.Sprintf("connection cap %d reached; dropping", sinkMaxConns)
-			s.bus.Publish(e)
+			s.reportOverload()
 		}
 	}
 }
@@ -52,7 +75,7 @@ func (s *Sink) serve(ctx context.Context, ln net.Listener) {
 func (s *Sink) handle(conn net.Conn) {
 	defer conn.Close()
 	port := s.orig(conn)
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second)) // bounds BOTH the read and the banner write
 	buf := make([]byte, sinkReadCap)
 	n, _ := conn.Read(buf) // best-effort; may be 0
 	_, _ = conn.Write([]byte("220 service ready\r\n"))
