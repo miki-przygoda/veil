@@ -19,9 +19,9 @@ const (
 // subject's originally-intended TCP port (recovered via SO_ORIGINAL_DST on
 // Linux; a stub in tests). gateway is the sink IP, echoed as the fact Dest.
 type Sink struct {
-	bus       *events.Bus
-	gateway   string
-	orig      func(net.Conn) int
+	bus        *events.Bus
+	gateway    string
+	orig       func(net.Conn) int
 	overloaded atomic.Bool
 }
 

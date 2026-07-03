@@ -40,9 +40,9 @@ func TestParseQuery(t *testing.T) {
 func TestParseQueryMalformed(t *testing.T) {
 	good := encodeQuery(1, "x.local", dnsTypeA)
 	for _, bad := range [][]byte{
-		{},                          // empty
-		{0, 0, 0, 0, 0, 1},          // truncated header
-		append(append([]byte{}, good[:13]...), 0x40), // truncated: label body then no room for the next length byte
+		{},                 // empty
+		{0, 0, 0, 0, 0, 1}, // truncated header
+		append(append([]byte{}, good[:13]...), 0x40),     // truncated: label body then no room for the next length byte
 		{0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0xc0, 0x0c}, // compression pointer in question
 	} {
 		if _, err := parseQuery(bad); err == nil {
