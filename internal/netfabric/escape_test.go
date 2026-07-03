@@ -31,7 +31,11 @@ func TestClassify(t *testing.T) {
 		{"sink connect", trafficTo("172.20.0.5", "172.20.0.1", "tcp", "sink connect"), true, "honeypot-hit"},
 		{"stub dns w/ IP dest", trafficTo("10.0.0.5", "10.0.0.9", "dns", "capture"), true, "egress-attempt"}, // 10.0.0.9 is off the 172.20.0.0/16 world subnet -> egress-attempt
 		{"resident noise", trafficTo("resident-01", "", "http", "GET /feed"), false, ""},
-		{"own escape (no loop)", func() events.Event { e := trafficTo("x", "8.8.8.8", "tcp", "egress-attempt"); e.Kind = events.KindEscape; return e }(), false, ""},
+		{"own escape (no loop)", func() events.Event {
+			e := trafficTo("x", "8.8.8.8", "tcp", "egress-attempt")
+			e.Kind = events.KindEscape
+			return e
+		}(), false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
