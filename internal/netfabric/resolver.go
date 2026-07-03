@@ -48,7 +48,15 @@ func (r *Resolver) respond(query []byte) (reply []byte, qname string, world bool
 // Serve answers UDP queries until ctx is cancelled, publishing a sanitised query
 // fact per request. conn is injected so tests drive it over loopback.
 func (r *Resolver) Serve(ctx context.Context, conn net.PacketConn) error {
-	go func() { <-ctx.Done(); _ = conn.Close() }() // unblocks ReadFrom on shutdown
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-done:
+		}
+		_ = conn.Close()
+	}()
 	buf := make([]byte, maxDNSPacket)
 	for {
 		n, addr, err := conn.ReadFrom(buf)
@@ -70,15 +78,14 @@ func (r *Resolver) Serve(ctx context.Context, conn net.PacketConn) error {
 		e := events.New(events.KindTraffic, hostIP(addr), "query")
 		e.Protocol = "dns"
 		e.Dest = safeField(qname, 253)
+		detail := "sinkholed"
 		if world {
+			detail = "world"
 			if ip, ok := r.world.Names[qname]; ok {
-				e.Detail = "world " + ip.String()
-			} else {
-				e.Detail = "world"
+				detail = "world " + ip.String()
 			}
-		} else {
-			e.Detail = "sinkholed"
 		}
+		e.Detail = detail
 		r.bus.Publish(e)
 	}
 }

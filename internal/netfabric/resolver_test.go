@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,7 +88,49 @@ func TestResolverServePublishesSanitisedFact(t *testing.T) {
 		if e.Kind != events.KindTraffic || e.Protocol != "dns" || e.Dest != "web.veil.local" {
 			t.Errorf("query fact = %+v", e)
 		}
+		if e.Source != "127.0.0.1" {
+			t.Errorf("Source = %q, want 127.0.0.1 (transport peer, [L7])", e.Source)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no query fact published")
+	}
+}
+
+func TestResolverServeSanitisesHostileName(t *testing.T) {
+	bus := events.NewBus(8)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = NewResolver(testWorld(t), bus).Serve(ctx, pc) }()
+
+	client, err := net.Dial("udp", pc.LocalAddr().String())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer client.Close()
+	// A label carrying a non-allowlisted byte; encodeQuery puts it on the wire verbatim.
+	if _, err := client.Write(encodeQuery(2, "ev<il.veil.local", dnsTypeA)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	resp := make([]byte, 512)
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := client.Read(resp); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	select {
+	case e := <-feed:
+		if strings.Contains(e.Dest, "<") {
+			t.Errorf("Dest carries raw '<' (not sanitised): %q", e.Dest)
+		}
+		if !strings.Contains(e.Dest, "\\x3c") {
+			t.Errorf("Dest = %q, want the '<' hex-escaped to \\x3c ([C1])", e.Dest)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no fact published for hostile query")
 	}
 }
