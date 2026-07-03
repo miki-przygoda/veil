@@ -169,6 +169,17 @@ func TestBuildSpecOptInControls(t *testing.T) {
 	}
 }
 
+func TestBuildSpecDNS(t *testing.T) {
+	if dns := DefaultConfig().buildSpec("w").HostConfig.Dns; len(dns) != 0 {
+		t.Errorf("default must not set Dns, got %v", dns)
+	}
+	cfg := DefaultConfig()
+	cfg.DNS = []string{"172.20.0.1"}
+	if got := cfg.buildSpec("w").HostConfig.Dns; len(got) != 1 || got[0] != "172.20.0.1" {
+		t.Errorf("Dns = %v, want [172.20.0.1]", got)
+	}
+}
+
 func jsonArrayHasString(v any, want string) bool {
 	arr, ok := v.([]any)
 	if !ok {

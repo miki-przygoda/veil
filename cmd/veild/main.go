@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -29,12 +30,13 @@ import (
 // reachable Docker daemon: if it is unavailable, this returns an error and veild
 // exits (fail closed) rather than silently degrading to the isolation-free stub.
 // -backend=stub is the explicit, opt-in, zero-isolation dev mode.
-func selectSandbox(ctx context.Context, backend, network string, bus *events.Bus, log *slog.Logger) (sandbox.Sandbox, error) {
+func selectSandbox(ctx context.Context, backend, network string, dns []string, bus *events.Bus, log *slog.Logger) (sandbox.Sandbox, error) {
 	if backend == "stub" {
 		return sandbox.NewStub("world-01", bus), nil
 	}
 	cfg := sandbox.DefaultConfig()
 	cfg.Network = network // "" keeps NetworkMode:none
+	cfg.DNS = dns         // nil leaves Docker's default resolver
 	c, err := sandbox.NewContainer("world-01", bus, cfg)
 	if err == nil {
 		err = c.Ping(ctx)
@@ -65,9 +67,51 @@ func selectTap(ctx context.Context, tapMode, bridge string, bus *events.Bus, log
 	return tap
 }
 
+// buildWorld turns the resolved veil-net subnet/gateway into the shared World the
+// resolver and classifier read. Empty strings (stub/no-Docker) yield a nil Subnet
+// so the classifier's IP vector safely no-ops.
+func buildWorld(subnet, gateway string) netfabric.World {
+	w := netfabric.World{
+		Gateway: net.ParseIP(gateway),
+		Zones:   []string{".veil.local"},
+		Names:   map[string]net.IP{},
+	}
+	if subnet != "" {
+		if _, ipnet, err := net.ParseCIDR(subnet); err == nil {
+			w.Subnet = ipnet
+		}
+	}
+	return w
+}
+
+// startResolver binds the synthetic resolver to the veil-net gateway and serves
+// it in the background. It returns false (and emits an observable KindSystem
+// event) if the bind fails, so the caller leaves the box on Docker's default DNS
+// — mirroring the -backend/-tap graceful fallbacks.
+func startResolver(ctx context.Context, world netfabric.World, gateway string, bus *events.Bus, log *slog.Logger) bool {
+	conn, err := net.ListenPacket("udp", gateway+":53")
+	if err != nil {
+		log.Warn("resolver bind failed, world DNS disabled", "err", err)
+		e := events.New(events.KindSystem, "veild", "resolver fallback")
+		e.Detail = "resolver bind failed on " + gateway + ": " + err.Error()
+		bus.Publish(e)
+		return false
+	}
+	go func() {
+		// Serve owns conn and closes it when it returns (via its own shutdown
+		// goroutine, on ctx-cancel or on error return), so we don't close it here.
+		if err := netfabric.NewResolver(world, bus).Serve(ctx, conn); err != nil && ctx.Err() == nil {
+			log.Error("resolver", "err", err)
+		}
+	}()
+	log.Info("world resolver serving", "addr", gateway+":53")
+	return true
+}
+
 func main() {
 	backend := flag.String("backend", "container", "sandbox backend: container|stub")
 	tapMode := flag.String("tap", "packet", "tap backend: packet|stub")
+	resolverMode := flag.String("resolver", "on", "world DNS resolver + honeypot: on|off")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -81,17 +125,17 @@ func main() {
 	// and the tap observes. Best-effort — if it fails, the box stays isolated.
 	// teardownFabric is called inline in the shutdown sequence (not deferred) so
 	// it also runs on the viz-error os.Exit path.
-	var netName, bridge string
+	var netName, bridge, subnet, gateway string
 	teardownFabric := func() {}
 	if *backend != "stub" {
 		if cli, err := docker.New(os.Getenv("DOCKER_HOST")); err != nil {
 			log.Warn("docker client unavailable, skipping network", "err", err)
 		} else {
 			fabric := netfabric.NewFabric(cli, "veil-net")
-			if net, err := fabric.Ensure(ctx); err != nil {
+			if dnet, err := fabric.Ensure(ctx); err != nil {
 				log.Warn("network setup failed, box stays isolated", "err", err)
 			} else {
-				netName, bridge = net.Name, net.Bridge
+				netName, bridge, subnet, gateway = dnet.Name, dnet.Bridge, dnet.Subnet, dnet.Gateway
 				teardownFabric = func() {
 					tctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()
@@ -103,20 +147,50 @@ func main() {
 		}
 	}
 
+	// World-service layer (all host-side): a synthetic resolver + transparent
+	// honeypot make the world believable; the classifier turns facts into
+	// KindEscape. The classifier is cheap and Docker-free, so it always runs; on
+	// the stub path Subnet is nil and its IP vector no-ops.
+	world := buildWorld(subnet, gateway)
+	go func() {
+		if err := netfabric.NewClassifier(world).Run(ctx, bus); err != nil && ctx.Err() == nil {
+			log.Error("classifier", "err", err)
+		}
+	}()
+
+	var dns []string
+	teardownHoneypot := func() {}
+	if *resolverMode == "on" && gateway != "" {
+		if startResolver(ctx, world, gateway, bus, log) {
+			dns = []string{gateway}
+			if td, err := netfabric.InstallHoneypot(bridge, subnet, gateway, bus, log); err != nil {
+				log.Warn("honeypot unavailable, escape detection still on", "err", err)
+				e := events.New(events.KindSystem, "veild", "honeypot unavailable")
+				e.Detail = err.Error()
+				bus.Publish(e)
+			} else {
+				teardownHoneypot = td
+			}
+		}
+	}
+
 	// The contained world.
-	box, err := selectSandbox(ctx, *backend, netName, bus, log)
+	box, err := selectSandbox(ctx, *backend, netName, dns, bus, log)
 	if err != nil {
 		log.Error("sandbox backend unavailable", "err", err)
+		teardownHoneypot()
 		teardownFabric()
 		os.Exit(1)
 	}
 	if err := box.Create(ctx); err != nil {
 		log.Error("sandbox create", "err", err)
+		teardownHoneypot()
 		teardownFabric()
 		os.Exit(1)
 	}
 	if err := box.Start(ctx); err != nil {
 		log.Error("sandbox start", "err", err)
+		teardownHoneypot()
 		teardownFabric()
 		os.Exit(1)
 	}
@@ -145,6 +219,7 @@ func main() {
 		log.Warn("sandbox destroy on shutdown", "err", err)
 	}
 	cancelDestroy()
+	teardownHoneypot()
 	teardownFabric()
 
 	if runErr != nil {

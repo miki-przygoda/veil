@@ -53,6 +53,26 @@ bridge and streams it as events; elsewhere (e.g. macOS Docker Desktop) it logs a
 notice and falls back to the synthetic stub tap. Force it with `-tap=stub`. Real
 capture is validated on Linux (`VEIL_PCAP_IT`).
 
+`veild` also runs a **synthetic DNS resolver** on the `veil-net` gateway (it
+answers world names like `web.veil.local`; unknown names are sinkholed to a
+**transparent honeypot** rather than failing, so the world stays believable) and
+a host-side **escape classifier** that emits `KindEscape`. Disable both with
+`-resolver=off`.
+
+Escape surfaces three ways, all derived host-side:
+
+- `external-dns` — the subject resolves a non-world name (seen by the resolver);
+- `egress-attempt` — the subject sends to an off-`veil-net` IP (seen by the tap);
+- `honeypot-hit` — the subject connects to a sinkholed name and we capture the
+  follow-through (seen by the transparent honeypot).
+
+On an `internal` network a *successful* escape is impossible by construction, so
+the **attempt is the signal**. The transparent honeypot needs `CAP_NET_ADMIN`
+and is **Linux-only** (host-side `iptables` REDIRECT + `SO_ORIGINAL_DST`);
+elsewhere it degrades off with an observable `KindSystem` event and escape
+*detection* still runs. The live resolver + DNS escape path is validated on Linux
+(`VEIL_DNS_IT`).
+
 ```sh
 make build      # binaries -> bin/veild, bin/veil-agent
 make test       # run tests

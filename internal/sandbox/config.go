@@ -15,6 +15,7 @@ type Config struct {
 	Memory      int64    // hard memory cap, bytes
 	PidsLimit   int64    // max processes
 	Network     string   // "" => no network (NetworkMode:none); else the network to join
+	DNS         []string // resolver addresses; empty => Docker default
 	User        string   // "" => "65534:65534" (non-root)
 	CPUs        float64  // 0  => 1.0 CPU
 	UsernsMode  string   // opt-in user-namespace mode (e.g. "private"); default off
@@ -105,6 +106,7 @@ func (c Config) buildSpec(world string) docker.CreateSpec {
 			PidsLimit:      pids,
 			Memory:         mem,
 			NetworkMode:    netMode,
+			Dns:            c.DNS,
 			MaskedPaths:    maskedPaths,
 			ReadonlyPaths:  readonlyPaths,
 			CpuPeriod:      100000,

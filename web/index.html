@@ -4,46 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>veil</title>
-<style>
-  :root {
-    --bg: #0b0e14;
-    --panel: #11151f;
-    --line: #1c2230;
-    --text: #c8d0e0;
-    --dim: #5a6478;
-    --traffic: #6fb3ff;
-    --lifecycle: #b48cff;
-    --escape: #ff6b6b;
-    --system: #4dd6a8;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  }
-  header {
-    display: flex; align-items: baseline; gap: 12px;
-    padding: 14px 18px; border-bottom: 1px solid var(--line);
-  }
-  header h1 { margin: 0; font-size: 15px; letter-spacing: 3px; font-weight: 600; }
-  header .sub { color: var(--dim); }
-  #status { margin-left: auto; color: var(--dim); }
-  #status.live { color: var(--system); }
-  #feed { padding: 8px 0; }
-  .row {
-    display: grid; grid-template-columns: 92px 96px 1fr; gap: 12px;
-    padding: 3px 18px; border-left: 2px solid transparent;
-  }
-  .row:hover { background: var(--panel); }
-  .t { color: var(--dim); }
-  .kind { text-transform: uppercase; font-size: 11px; letter-spacing: 1px; }
-  .traffic   { color: var(--traffic); }   .row.traffic   { border-left-color: var(--traffic); }
-  .lifecycle { color: var(--lifecycle); } .row.lifecycle { border-left-color: var(--lifecycle); }
-  .escape    { color: var(--escape); }    .row.escape    { border-left-color: var(--escape); }
-  .system    { color: var(--system); }    .row.system    { border-left-color: var(--system); }
-  .msg .src { color: var(--text); }
-  .msg .arrow, .msg .meta { color: var(--dim); }
-</style>
+<link rel="stylesheet" href="/app.css" />
 </head>
 <body>
   <header>
@@ -53,45 +14,6 @@
   </header>
   <div id="feed"></div>
 
-<script>
-  const feed = document.getElementById("feed");
-  const status = document.getElementById("status");
-  const MAX_ROWS = 300;
-
-  function fmtTime(iso) {
-    const d = new Date(iso);
-    return d.toLocaleTimeString("en-GB", { hour12: false }) +
-      "." + String(d.getMilliseconds()).padStart(3, "0");
-  }
-
-  function render(e) {
-    const row = document.createElement("div");
-    row.className = "row " + e.kind;
-
-    const dest = e.dest ? `<span class="arrow">→</span> <span class="src">${e.dest}</span>` : "";
-    const meta = [e.protocol, e.detail].filter(Boolean).join(" · ");
-
-    row.innerHTML =
-      `<span class="t">${fmtTime(e.time)}</span>` +
-      `<span class="kind ${e.kind}">${e.kind}</span>` +
-      `<span class="msg"><span class="src">${e.source}</span> ${dest} ` +
-      `${e.action} ${meta ? `<span class="meta">[${meta}]</span>` : ""}</span>`;
-
-    feed.prepend(row);
-    while (feed.childElementCount > MAX_ROWS) feed.lastElementChild.remove();
-  }
-
-  function connect() {
-    const es = new EventSource("/events");
-    es.onopen = () => { status.textContent = "live"; status.className = "live"; };
-    es.onmessage = (m) => render(JSON.parse(m.data));
-    es.onerror = () => {
-      status.textContent = "reconnecting…"; status.className = "";
-      es.close();
-      setTimeout(connect, 1500);
-    };
-  }
-  connect();
-</script>
+<script src="/app.js"></script>
 </body>
 </html>
