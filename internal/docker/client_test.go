@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -133,5 +134,30 @@ func TestDockerClientPingUnavailable(t *testing.T) {
 	}
 	if err := cli.Ping(context.Background()); !errors.Is(err, ErrEngineUnavailable) {
 		t.Fatalf("Ping err = %v, want ErrEngineUnavailable", err)
+	}
+}
+
+func TestCreateSpecStaticIPAndCapAdd(t *testing.T) {
+	spec := CreateSpec{
+		Image:      "img",
+		HostConfig: HostConfig{CapAdd: []string{"NET_BIND_SERVICE"}},
+		NetworkingConfig: &NetworkingConfig{EndpointsConfig: map[string]EndpointConfig{
+			"veil-net": {IPAMConfig: &EndpointIPAM{IPv4Address: "172.20.0.10"}},
+		}},
+	}
+	b, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	for _, want := range []string{`"CapAdd":["NET_BIND_SERVICE"]`, `"EndpointsConfig"`, `"IPv4Address":"172.20.0.10"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("marshalled spec missing %s:\n%s", want, s)
+		}
+	}
+	// A spec that sets neither must omit both (omitempty).
+	def, _ := json.Marshal(CreateSpec{Image: "x"})
+	if strings.Contains(string(def), "NetworkingConfig") || strings.Contains(string(def), "CapAdd") {
+		t.Errorf("empty spec must omit NetworkingConfig/CapAdd: %s", def)
 	}
 }
