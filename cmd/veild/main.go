@@ -223,12 +223,17 @@ func main() {
 	// otherwise. The two are mutually exclusive — never both.
 	if fleet != nil {
 		if err := fleet.Up(ctx, bus, log); err != nil {
-			log.Warn("residents failed to start", "err", err)
+			// Every resident failed (e.g. veil-resident:dev not built). Keep the
+			// dashboard alive with the bus-fake, the same fallback used with no fabric.
+			log.Warn("residents failed to start, using synthetic fallback", "err", err)
+			go (&residents.Population{Size: 5}).Run(ctx, bus)
 		} else {
 			teardownResidents = func() {
 				tctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				_ = fleet.Down(tctx, bus)
+				if err := fleet.Down(tctx, bus); err != nil {
+					log.Warn("residents teardown", "err", err)
+				}
 			}
 		}
 	} else {
