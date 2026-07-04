@@ -92,6 +92,15 @@ make resident-image
 docker run --rm veil-resident:dev -serve=http:80,ssh:22 -hostname=web.veil.local
 ```
 
+When the container backend + `veil-net` are up, `veild` populates the world with a
+small-office LAN of **resident containers** (web/mail/git servers, an SSH bastion,
+and client workstations) — each a `veil-resident` host with a static IP. Their
+server names resolve through the world DNS resolver, and their real DNS/HTTP/SMTP
+traffic makes `veil-net` look alive to the tap and to a probing subject. Disable
+with `-residents=off`; without a real fabric (stub backend / no Docker), `veild`
+falls back to synthetic bus events so the dashboard still shows life. Live spawn is
+validated on Linux (`VEIL_RESIDENTS_IT`).
+
 ## Layout
 
 ```
