@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/miki-przygoda/veil/internal/docker"
+	"github.com/miki-przygoda/veil/internal/sandbox"
 )
 
 // fleetEngine is the small Docker surface Fleet needs. *docker.Client satisfies it
@@ -81,4 +82,43 @@ func (f *Fleet) WorldNames() map[string]net.IP {
 		}
 	}
 	return names
+}
+
+// residentSpec builds a host's container spec: the box's hardening (HardenedSpec)
+// plus the resident bits — image, role Cmd, veil-net + UDP-pinned world DNS, a
+// static IP, and only the NET_BIND_SERVICE cap (for standard low ports).
+func (f *Fleet) residentSpec(h Host) docker.CreateSpec {
+	cfg := sandbox.Config{
+		Image:   f.image,
+		Network: "veil-net",
+		DNS:     []string{f.gateway},
+		Cmd:     residentCmd(h, f.gateway),
+	}
+	spec := cfg.HardenedSpec("resident-" + h.Name)
+	spec.HostConfig.CapAdd = []string{"NET_BIND_SERVICE"}
+	if ip := f.hostIP(h.Offset); ip != nil {
+		spec.NetworkingConfig = &docker.NetworkingConfig{
+			EndpointsConfig: map[string]docker.EndpointConfig{
+				"veil-net": {IPAMConfig: &docker.EndpointIPAM{IPv4Address: ip.String()}},
+			},
+		}
+	}
+	if spec.Labels == nil {
+		spec.Labels = map[string]string{}
+	}
+	spec.Labels["com.veil.role"] = "resident"
+	return spec
+}
+
+// residentCmd builds the veil-resident flags. -resolver is the gateway over UDP
+// (the deferred honeypot-hit seam); empty -serve/-client pairs are omitted.
+func residentCmd(h Host, gateway string) []string {
+	var cmd []string
+	if h.Serve != "" {
+		cmd = append(cmd, "-serve", h.Serve)
+	}
+	if h.Client != "" {
+		cmd = append(cmd, "-client", h.Client)
+	}
+	return append(cmd, "-hostname", h.Name, "-resolver", gateway+":53")
 }
