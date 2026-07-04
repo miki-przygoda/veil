@@ -69,12 +69,16 @@ func selectTap(ctx context.Context, tapMode, bridge string, bus *events.Bus, log
 
 // buildWorld turns the resolved veil-net subnet/gateway into the shared World the
 // resolver and classifier read. Empty strings (stub/no-Docker) yield a nil Subnet
-// so the classifier's IP vector safely no-ops.
-func buildWorld(subnet, gateway string) netfabric.World {
+// so the classifier's IP vector safely no-ops. names, when non-nil, seeds
+// World.Names from the fleet's WorldNames so the resolver can answer fleet hosts.
+func buildWorld(subnet, gateway string, names map[string]net.IP) netfabric.World {
 	w := netfabric.World{
 		Gateway: net.ParseIP(gateway),
 		Zones:   []string{".veil.local"},
 		Names:   map[string]net.IP{},
+	}
+	for k, v := range names {
+		w.Names[k] = v
 	}
 	if subnet != "" {
 		if _, ipnet, err := net.ParseCIDR(subnet); err == nil {
@@ -112,6 +116,7 @@ func main() {
 	backend := flag.String("backend", "container", "sandbox backend: container|stub")
 	tapMode := flag.String("tap", "packet", "tap backend: packet|stub")
 	resolverMode := flag.String("resolver", "on", "world DNS resolver + honeypot: on|off")
+	residentsMode := flag.String("residents", "on", "spawn synthetic resident hosts on veil-net: on|off")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -127,8 +132,11 @@ func main() {
 	// it also runs on the viz-error os.Exit path.
 	var netName, bridge, subnet, gateway string
 	teardownFabric := func() {}
+	var cli *docker.Client
 	if *backend != "stub" {
-		if cli, err := docker.New(os.Getenv("DOCKER_HOST")); err != nil {
+		var err error
+		cli, err = docker.New(os.Getenv("DOCKER_HOST"))
+		if err != nil {
 			log.Warn("docker client unavailable, skipping network", "err", err)
 		} else {
 			fabric := netfabric.NewFabric(cli, "veil-net")
@@ -147,11 +155,24 @@ func main() {
 		}
 	}
 
+	// Resident fleet: constructed BEFORE buildWorld so WorldNames seeds the
+	// resolver. The fleet is skipped (Population fallback) on the stub backend,
+	// when -residents=off, or when Docker is unavailable.
+	var fleet *residents.Fleet
+	teardownResidents := func() {}
+	if *backend != "stub" && *residentsMode == "on" && gateway != "" && cli != nil {
+		fleet = residents.NewFleet(cli, "veil-resident:dev", subnet, gateway, residents.DefaultRoster())
+	}
+	var residentNames map[string]net.IP
+	if fleet != nil {
+		residentNames = fleet.WorldNames()
+	}
+
 	// World-service layer (all host-side): a synthetic resolver + transparent
 	// honeypot make the world believable; the classifier turns facts into
 	// KindEscape. The classifier is cheap and Docker-free, so it always runs; on
 	// the stub path Subnet is nil and its IP vector no-ops.
-	world := buildWorld(subnet, gateway)
+	world := buildWorld(subnet, gateway, residentNames)
 	go func() {
 		if err := netfabric.NewClassifier(world).Run(ctx, bus); err != nil && ctx.Err() == nil {
 			log.Error("classifier", "err", err)
@@ -178,25 +199,41 @@ func main() {
 	box, err := selectSandbox(ctx, *backend, netName, dns, bus, log)
 	if err != nil {
 		log.Error("sandbox backend unavailable", "err", err)
+		teardownResidents()
 		teardownHoneypot()
 		teardownFabric()
 		os.Exit(1)
 	}
 	if err := box.Create(ctx); err != nil {
 		log.Error("sandbox create", "err", err)
+		teardownResidents()
 		teardownHoneypot()
 		teardownFabric()
 		os.Exit(1)
 	}
 	if err := box.Start(ctx); err != nil {
 		log.Error("sandbox start", "err", err)
+		teardownResidents()
 		teardownHoneypot()
 		teardownFabric()
 		os.Exit(1)
 	}
 
-	// Synthetic inhabitants so the world looks alive.
-	go (&residents.Population{Size: 5}).Run(ctx, bus)
+	// Synthetic inhabitants: real fleet when veil-net is up, Population bus-fake
+	// otherwise. The two are mutually exclusive — never both.
+	if fleet != nil {
+		if err := fleet.Up(ctx, bus, log); err != nil {
+			log.Warn("residents failed to start", "err", err)
+		} else {
+			teardownResidents = func() {
+				tctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				_ = fleet.Down(tctx, bus)
+			}
+		}
+	} else {
+		go (&residents.Population{Size: 5}).Run(ctx, bus)
+	}
 
 	// Host-side passive tap. Packet tap by default; falls back to stub when
 	// capture is unavailable (non-Linux or insufficient privilege).
@@ -219,6 +256,7 @@ func main() {
 		log.Warn("sandbox destroy on shutdown", "err", err)
 	}
 	cancelDestroy()
+	teardownResidents()
 	teardownHoneypot()
 	teardownFabric()
 
