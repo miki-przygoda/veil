@@ -130,8 +130,8 @@ func TestContainerCreateStart(t *testing.T) {
 		t.Errorf("reconcile remove id = %q, want veil-world-01", fe.calls[2].id)
 	}
 	// Create must forward the hardened spec verbatim (guards invariants #1/#2).
-	if !reflect.DeepEqual(fe.calls[3].spec, DefaultConfig().buildSpec("world-01")) {
-		t.Errorf("create spec mismatch:\n got %+v\nwant %+v", fe.calls[3].spec, DefaultConfig().buildSpec("world-01"))
+	if !reflect.DeepEqual(fe.calls[3].spec, DefaultConfig().HardenedSpec("world-01")) {
+		t.Errorf("create spec mismatch:\n got %+v\nwant %+v", fe.calls[3].spec, DefaultConfig().HardenedSpec("world-01"))
 	}
 
 	if err := c.Start(context.Background()); err != nil {

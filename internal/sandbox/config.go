@@ -25,7 +25,7 @@ type Config struct {
 
 // Docker's standard masked/read-only /proc & /sys paths, set explicitly so
 // containment is Veil-owned rather than reliant on daemon defaults.
-// Treat both slices as read-only — buildSpec shares the backing array; never append.
+// Treat both slices as read-only — HardenedSpec shares the backing array; never append.
 var maskedPaths = []string{
 	"/proc/asound", "/proc/acpi", "/proc/kcore", "/proc/keys",
 	"/proc/latency_stats", "/proc/timer_list", "/proc/timer_stats",
@@ -47,12 +47,12 @@ func DefaultConfig() Config {
 	}
 }
 
-// buildSpec turns a Config into the hardened container-create spec for a world.
+// HardenedSpec turns a Config into the hardened container-create spec for a world.
 // Every isolation control is set here, host-side — nothing is enforced in-guest.
 // Zero-valued hardening fields fall back to safe defaults so a partially-filled
 // Config can never silently produce an uncapped container (Docker reads an
 // absent/zero Memory or PidsLimit as "unlimited").
-func (c Config) buildSpec(world string) docker.CreateSpec {
+func (c Config) HardenedSpec(world string) docker.CreateSpec {
 	def := DefaultConfig()
 	cmd := c.Cmd
 	if len(cmd) == 0 {
