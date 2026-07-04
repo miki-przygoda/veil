@@ -132,11 +132,19 @@ func residentCmd(h Host, gateway string) []string {
 func (f *Fleet) Up(ctx context.Context, bus *events.Bus, log *slog.Logger) error {
 	failures := 0
 	for _, h := range f.hosts {
+		if f.hostIP(h.Offset) == nil {
+			log.Warn("resident has no static IP (subnet too small for its offset?)", "host", h.Name, "offset", h.Offset)
+		}
 		spec := f.residentSpec(h)
 		_ = f.eng.remove(ctx, spec.Name, true) // reconcile orphan (404 tolerated by the client)
 		id, err := f.eng.create(ctx, spec)
 		if err == nil {
-			err = f.eng.start(ctx, id)
+			if serr := f.eng.start(ctx, id); serr != nil {
+				// Created but failed to start: remove it so Down/teardown don't
+				// leak a container still holding a veil-net endpoint.
+				_ = f.eng.remove(ctx, id, true)
+				err = serr
+			}
 		}
 		if err != nil {
 			failures++

@@ -87,6 +87,14 @@ func TestResidentSpec(t *testing.T) {
 	if !strings.Contains(aj, "-client web.veil.local") || strings.Contains(aj, "-serve") {
 		t.Errorf("client spec Cmd wrong: %v", alice.Cmd)
 	}
+	// The honeypot-hit seam must hold for CLIENT hosts too (they do the DNS): both
+	// -resolver <gw>:53 and Dns:[gw] so client DNS is UDP-only, never TCP to the gateway.
+	if !strings.Contains(aj, "-resolver 172.20.0.1:53") {
+		t.Errorf("client missing -resolver seam: %v", alice.Cmd)
+	}
+	if len(alice.HostConfig.Dns) != 1 || alice.HostConfig.Dns[0] != "172.20.0.1" {
+		t.Errorf("client Dns = %v, want [172.20.0.1]", alice.HostConfig.Dns)
+	}
 }
 
 type fakeEngine struct {
@@ -94,6 +102,7 @@ type fakeEngine struct {
 	starts     []string
 	removes    []string
 	failCreate map[string]bool // by spec.Name
+	failStart  bool            // start always fails
 	n          int
 }
 
@@ -107,6 +116,9 @@ func (e *fakeEngine) create(_ context.Context, spec docker.CreateSpec) (string, 
 }
 func (e *fakeEngine) start(_ context.Context, id string) error {
 	e.starts = append(e.starts, id)
+	if e.failStart {
+		return errors.New("start boom")
+	}
 	return nil
 }
 func (e *fakeEngine) remove(_ context.Context, id string, _ bool) error {
@@ -181,6 +193,27 @@ func TestFleetUpAllFail(t *testing.T) {
 	f := newFleetWithEngine(fe, "img", "172.20.0.0/16", "172.20.0.1", DefaultRoster())
 	if err := f.Up(context.Background(), events.NewBus(64), quietLog()); err == nil {
 		t.Error("Up must error when all residents fail")
+	}
+}
+
+// A container that is created but fails to start must be removed, not leaked —
+// otherwise Down (tracked ids only) never reaps it and it can block network teardown.
+func TestFleetUpRemovesCreatedButUnstarted(t *testing.T) {
+	one := DefaultRoster()[:1] // just web.veil.local
+	fe := &fakeEngine{failStart: true}
+	f := newFleetWithEngine(fe, "img", "172.20.0.0/16", "172.20.0.1", one)
+	if err := f.Up(context.Background(), events.NewBus(8), quietLog()); err == nil {
+		t.Error("Up must error when the only resident fails to start")
+	}
+	if len(f.ids) != 0 {
+		t.Errorf("tracked ids = %d, want 0 (start failed)", len(f.ids))
+	}
+	// reconcile remove (by name) + cleanup remove (by id) = 2
+	if len(fe.removes) != 2 {
+		t.Errorf("removes = %v, want 2 (reconcile + cleanup of created-but-unstarted)", fe.removes)
+	}
+	if len(fe.creates) != 1 {
+		t.Errorf("creates = %d, want 1", len(fe.creates))
 	}
 }
 
