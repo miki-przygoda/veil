@@ -3,10 +3,13 @@ package residents
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 
 	"github.com/miki-przygoda/veil/internal/docker"
+	"github.com/miki-przygoda/veil/internal/events"
 	"github.com/miki-przygoda/veil/internal/sandbox"
 )
 
@@ -121,4 +124,51 @@ func residentCmd(h Host, gateway string) []string {
 		cmd = append(cmd, "-client", h.Client)
 	}
 	return append(cmd, "-hostname", h.Name, "-resolver", gateway+":53")
+}
+
+// Up creates and starts every roster host, best-effort: a host's failure logs +
+// emits one KindSystem and continues. Reconciles a crashed-run orphan by name
+// first. Errors only if every resident fails.
+func (f *Fleet) Up(ctx context.Context, bus *events.Bus, log *slog.Logger) error {
+	failures := 0
+	for _, h := range f.hosts {
+		spec := f.residentSpec(h)
+		_ = f.eng.remove(ctx, spec.Name, true) // reconcile orphan (404 tolerated by the client)
+		id, err := f.eng.create(ctx, spec)
+		if err == nil {
+			err = f.eng.start(ctx, id)
+		}
+		if err != nil {
+			failures++
+			log.Warn("resident failed to start", "host", h.Name, "err", err)
+			e := events.New(events.KindSystem, "veild", "resident failed")
+			e.Detail = h.Name + ": " + err.Error()
+			bus.Publish(e)
+			continue
+		}
+		f.ids = append(f.ids, id)
+		e := events.New(events.KindLifecycle, "resident/"+h.Name, "resident up")
+		e.Detail = fmt.Sprintf("ip=%s serve=%q client=%q", f.hostIP(h.Offset), h.Serve, h.Client)
+		bus.Publish(e)
+	}
+	if len(f.hosts) > 0 && failures == len(f.hosts) {
+		return fmt.Errorf("all %d residents failed to start", failures)
+	}
+	return nil
+}
+
+// Down removes every tracked resident (best-effort, force). Bounded and quiet —
+// like the fabric/honeypot teardowns — with a single summary lifecycle event.
+func (f *Fleet) Down(ctx context.Context, bus *events.Bus) error {
+	n := len(f.ids)
+	for _, id := range f.ids {
+		_ = f.eng.remove(ctx, id, true)
+	}
+	f.ids = nil
+	if n > 0 && bus != nil {
+		e := events.New(events.KindLifecycle, "veild", "residents down")
+		e.Detail = fmt.Sprintf("removed %d residents", n)
+		bus.Publish(e)
+	}
+	return nil
 }
