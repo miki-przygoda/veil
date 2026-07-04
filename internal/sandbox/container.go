@@ -81,7 +81,7 @@ func (c *Container) Create(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrImageMissing, c.cfg.Image)
 	}
-	spec := c.cfg.buildSpec(c.id)
+	spec := c.cfg.HardenedSpec(c.id)
 	// Reconcile a crashed-run orphan with the same name (404 tolerated).
 	if err := c.eng.remove(ctx, spec.Name, true); err != nil {
 		return err
@@ -143,7 +143,7 @@ func (c *Container) Reset(ctx context.Context) error {
 	}
 	// Past here the old container is gone and cannot be un-removed. Any failure
 	// leaves no running world, so we must not keep reporting "running".
-	spec := c.cfg.buildSpec(c.id)
+	spec := c.cfg.HardenedSpec(c.id)
 	spec.Image = c.resetTarget
 	cid, err := c.eng.create(ctx, spec)
 	if err != nil {

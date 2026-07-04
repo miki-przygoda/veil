@@ -64,7 +64,7 @@ func TestSelectTapPacketFallback(t *testing.T) {
 }
 
 func TestBuildWorld(t *testing.T) {
-	w := buildWorld("172.20.0.0/16", "172.20.0.1")
+	w := buildWorld("172.20.0.0/16", "172.20.0.1", nil)
 	if w.Subnet == nil || w.Subnet.String() != "172.20.0.0/16" {
 		t.Errorf("subnet = %v, want 172.20.0.0/16", w.Subnet)
 	}
@@ -79,9 +79,17 @@ func TestBuildWorld(t *testing.T) {
 }
 
 func TestBuildWorldEmpty(t *testing.T) {
-	w := buildWorld("", "") // stub/no-Docker path
+	w := buildWorld("", "", nil) // stub/no-Docker path
 	if w.Subnet != nil {
 		t.Error("empty subnet must yield nil Subnet (disables IP vector)")
+	}
+}
+
+func TestBuildWorldSeedsNames(t *testing.T) {
+	names := map[string]net.IP{"web.veil.local": net.ParseIP("172.20.0.10")}
+	w := buildWorld("172.20.0.0/16", "172.20.0.1", names)
+	if ip := w.Names["web.veil.local"]; ip == nil || ip.String() != "172.20.0.10" {
+		t.Errorf("World.Names not seeded: %v", w.Names)
 	}
 }
 

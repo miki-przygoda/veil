@@ -37,7 +37,10 @@ func (r *Resident) run(ctx context.Context, bus *events.Bus) {
 	}
 }
 
-// Population manages a set of residents.
+// Population is the bus-fake fallback: when no real veil-net fabric is up (the
+// stub backend or no Docker), it publishes synthetic traffic events straight to
+// the bus so the dashboard still looks alive. When the fabric is up, veild runs
+// the real Fleet instead (never both).
 type Population struct {
 	Size int
 }

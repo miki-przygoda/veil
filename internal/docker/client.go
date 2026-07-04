@@ -32,18 +32,20 @@ func (e *engineError) Error() string {
 type CreateSpec struct {
 	Name string `json:"-"`
 
-	User            string            `json:"User,omitempty"`
-	Image           string            `json:"Image"`
-	Cmd             []string          `json:"Cmd,omitempty"`
-	Labels          map[string]string `json:"Labels,omitempty"`
-	NetworkDisabled bool              `json:"NetworkDisabled"`
-	HostConfig      HostConfig        `json:"HostConfig"`
+	User             string            `json:"User,omitempty"`
+	Image            string            `json:"Image"`
+	Cmd              []string          `json:"Cmd,omitempty"`
+	Labels           map[string]string `json:"Labels,omitempty"`
+	NetworkDisabled  bool              `json:"NetworkDisabled"`
+	HostConfig       HostConfig        `json:"HostConfig"`
+	NetworkingConfig *NetworkingConfig `json:"NetworkingConfig,omitempty"`
 }
 
 type HostConfig struct {
 	ReadonlyRootfs bool              `json:"ReadonlyRootfs"`
 	Tmpfs          map[string]string `json:"Tmpfs,omitempty"`
 	CapDrop        []string          `json:"CapDrop,omitempty"`
+	CapAdd         []string          `json:"CapAdd,omitempty"` // residents add NET_BIND_SERVICE
 	SecurityOpt    []string          `json:"SecurityOpt,omitempty"`
 	PidsLimit      int64             `json:"PidsLimit,omitempty"`
 	Memory         int64             `json:"Memory,omitempty"`
@@ -54,7 +56,22 @@ type HostConfig struct {
 	UsernsMode     string            `json:"UsernsMode,omitempty"`
 	CpuPeriod      int64             `json:"CpuPeriod,omitempty"`
 	CpuQuota       int64             `json:"CpuQuota,omitempty"`
-	Sysctls        map[string]string `json:"Sysctls,omitempty"` // reserved hook; buildSpec does not set it yet
+	Sysctls        map[string]string `json:"Sysctls,omitempty"` // reserved hook; HardenedSpec does not set it yet
+}
+
+// NetworkingConfig pins per-network endpoint settings at create time (e.g. a
+// static IPv4). Docker honours IPAMConfig.IPv4Address only if it is inside the
+// network's subnet.
+type NetworkingConfig struct {
+	EndpointsConfig map[string]EndpointConfig `json:"EndpointsConfig,omitempty"`
+}
+
+type EndpointConfig struct {
+	IPAMConfig *EndpointIPAM `json:"IPAMConfig,omitempty"`
+}
+
+type EndpointIPAM struct {
+	IPv4Address string `json:"IPv4Address,omitempty"`
 }
 
 // dockerAPIVersion is the pinned Engine API version. Docker daemons reject
