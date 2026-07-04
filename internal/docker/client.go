@@ -56,7 +56,7 @@ type HostConfig struct {
 	UsernsMode     string            `json:"UsernsMode,omitempty"`
 	CpuPeriod      int64             `json:"CpuPeriod,omitempty"`
 	CpuQuota       int64             `json:"CpuQuota,omitempty"`
-	Sysctls        map[string]string `json:"Sysctls,omitempty"` // reserved hook; buildSpec does not set it yet
+	Sysctls        map[string]string `json:"Sysctls,omitempty"` // reserved hook; HardenedSpec does not set it yet
 }
 
 // NetworkingConfig pins per-network endpoint settings at create time (e.g. a
