@@ -26,10 +26,17 @@ var _ Execer = (*Container)(nil)
 // exit code. cmd is the raw argv — the subject broker builds the `sh -c`
 // wrapper, so this stays a generic "run this argv in the box".
 func (c *Container) Exec(ctx context.Context, cmd []string) (ExecResult, error) {
-	if st := c.Status(); st != StatusRunning {
+	// Capture the status and the docker id together under the lock, so a
+	// concurrent Reset/Destroy can't change the container between the guard and
+	// the exec. c.containerID (not c.id, the logical world name) is what Docker's
+	// /containers/{id}/exec resolves against — matching every other engine call.
+	c.mu.Lock()
+	st, cid := c.status, c.containerID
+	c.mu.Unlock()
+	if st != StatusRunning {
 		return ExecResult{}, fmt.Errorf("exec: container not running (status=%s)", st)
 	}
-	execID, err := c.eng.execCreate(ctx, c.id, cmd)
+	execID, err := c.eng.execCreate(ctx, cid, cmd)
 	if err != nil {
 		return ExecResult{}, fmt.Errorf("exec create: %w", err)
 	}

@@ -12,4 +12,9 @@ func TestSafeField(t *testing.T) {
 	if got := SafeField("aaaaaaaaaaaaaaaa", 4); len(got) > 4 {
 		t.Errorf("SafeField did not cap length: %q", got)
 	}
+	// A non-allowlisted byte in the capped window expands to \xNN, so the OUTPUT
+	// can exceed max even though max bounds the INPUT.
+	if got := SafeField("<<<<", 2); got != `\x3c\x3c` {
+		t.Errorf("SafeField(\"<<<<\", 2) = %q, want \\x3c\\x3c (output may exceed max)", got)
+	}
 }

@@ -25,6 +25,18 @@ func TestContainerExec(t *testing.T) {
 	if !reflect.DeepEqual(last3, []string{"execCreate", "execStart", "execInspect"}) {
 		t.Errorf("exec op sequence = %v", ops)
 	}
+
+	// The exec must target the Docker container id (c.containerID), not the
+	// logical world name (c.id) — otherwise it 404s against a real daemon.
+	var gotID string
+	for _, call := range fe.calls {
+		if call.op == "execCreate" {
+			gotID = call.id
+		}
+	}
+	if gotID != "cid" {
+		t.Errorf("execCreate id = %q, want \"cid\" (docker container id, not the logical name)", gotID)
+	}
 }
 
 func TestContainerExecNotRunning(t *testing.T) {
