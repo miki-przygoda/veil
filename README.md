@@ -101,6 +101,16 @@ with `-residents=off`; without a real fabric (stub backend / no Docker), `veild`
 falls back to synthetic bus events so the dashboard still shows life. Live spawn is
 validated on Linux (`VEIL_RESIDENTS_IT`).
 
+### Driving a subject (scripted)
+
+`veild -subject=path/to/script.txt` replays a command file into the box — one
+command per line (`#` comments and blank lines ignored). Each command runs inside
+the container via `docker exec`; its sanitised transcript surfaces on the feed as
+`subject` events, while any escape it triggers (a `wget` to an external host, a
+`nslookup` of an off-world name) is caught independently by the resolver/honeypot
+as an `escape` event. Requires the container backend (`-backend=container`, the
+default); it is skipped with a note on `-backend=stub`.
+
 ## Layout
 
 ```

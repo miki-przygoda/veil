@@ -1,9 +1,9 @@
-// Command veil-agent is the guest-side companion that runs *inside* the
-// contained world. For now it is a placeholder that heartbeats; later it will
-// broker the subject's tool calls and report from within the box.
-//
-// It exists already so the two-binary split (host daemon vs guest agent) is
-// real from day one — which is what justifies the cmd/ layout.
+// Command veil-agent is a placeholder. The subject is driven from the HOST side
+// (brain outside): veild's subject broker execs commands inside the box via the
+// sandbox Execer seam and records the transcript. There is deliberately no
+// in-box agent that phones home — that would require egress and put subject logic
+// inside the threat model. This stub remains only as a build target; see
+// internal/subject and cmd/veild's -subject flag.
 package main
 
 import (
