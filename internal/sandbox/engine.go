@@ -23,6 +23,9 @@ type engine interface {
 	remove(ctx context.Context, id string, force bool) error
 	commit(ctx context.Context, id, ref string) (imageID string, err error)
 	removeImage(ctx context.Context, ref string) error
+	execCreate(ctx context.Context, id string, cmd []string) (execID string, err error)
+	execStart(ctx context.Context, execID string) (output []byte, err error)
+	execInspect(ctx context.Context, execID string) (exitCode int, err error)
 }
 
 // dockerAdapter makes the exported *docker.Client satisfy the unexported engine.
@@ -46,6 +49,15 @@ func (a dockerAdapter) commit(ctx context.Context, id, ref string) (string, erro
 }
 func (a dockerAdapter) removeImage(ctx context.Context, ref string) error {
 	return a.c.RemoveImage(ctx, ref)
+}
+func (a dockerAdapter) execCreate(ctx context.Context, id string, cmd []string) (string, error) {
+	return a.c.ExecCreate(ctx, id, cmd)
+}
+func (a dockerAdapter) execStart(ctx context.Context, execID string) ([]byte, error) {
+	return a.c.ExecStart(ctx, execID)
+}
+func (a dockerAdapter) execInspect(ctx context.Context, execID string) (int, error) {
+	return a.c.ExecInspect(ctx, execID)
 }
 
 // compile-time check that the adapter satisfies the engine interface.
