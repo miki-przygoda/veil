@@ -290,6 +290,67 @@ func (c *Client) RemoveImage(ctx context.Context, ref string) error {
 	return nil
 }
 
+// execOutputCap bounds how much of an exec's output we read, so a runaway
+// command inside the box cannot flood the observer.
+const execOutputCap = 64 << 10 // 64 KiB
+
+// ExecCreate creates an exec instance in the container and returns its ID.
+// TTY mode gives a single merged stdout+stderr stream (a transcript row).
+func (c *Client) ExecCreate(ctx context.Context, id string, cmd []string) (string, error) {
+	body := map[string]any{
+		"AttachStdout": true,
+		"AttachStderr": true,
+		"Tty":          true,
+		"Cmd":          cmd,
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/containers/"+id+"/exec", nil, body)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return "", decodeError(resp)
+	}
+	return decodeID(resp)
+}
+
+// ExecStart starts a created exec and returns its merged output, read to EOF but
+// bounded by execOutputCap. For an output-only (non-interactive) exec, reading
+// the response body to EOF is sufficient — no stream hijack needed.
+func (c *Client) ExecStart(ctx context.Context, execID string) ([]byte, error) {
+	body := map[string]any{"Detach": false, "Tty": true}
+	resp, err := c.do(ctx, http.MethodPost, "/exec/"+execID+"/start", nil, body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, decodeError(resp)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, execOutputCap))
+}
+
+// ExecInspect returns the exit code of a finished exec (the start stream carries
+// no status, so the code is fetched separately once the process has exited).
+func (c *Client) ExecInspect(ctx context.Context, execID string) (int, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/exec/"+execID+"/json", nil, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, decodeError(resp)
+	}
+	var out struct {
+		ExitCode int  `json:"ExitCode"`
+		Running  bool `json:"Running"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, err
+	}
+	return out.ExitCode, nil
+}
+
 // NetworkSpec is the body for POST /networks/create.
 type NetworkSpec struct {
 	Name       string            `json:"Name"`
