@@ -342,8 +342,7 @@ func (c *Client) ExecInspect(ctx context.Context, execID string) (int, error) {
 		return 0, decodeError(resp)
 	}
 	var out struct {
-		ExitCode int  `json:"ExitCode"`
-		Running  bool `json:"Running"`
+		ExitCode int `json:"ExitCode"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return 0, err

@@ -179,7 +179,12 @@ func TestExecEndpoints(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"Id":"exec-9"}`))
 	})
-	mux.HandleFunc(vp+"/exec/exec-9/start", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc(vp+"/exec/exec-9/start", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["Detach"] != false || body["Tty"] != true {
+			t.Errorf("exec start body = %v, want Detach=false Tty=true", body)
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("total 0\nhello\n"))
 	})
