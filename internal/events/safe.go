@@ -1,18 +1,18 @@
-package netfabric
+package events
 
 import (
 	"fmt"
 	"strings"
 )
 
-// safeField reduces an attacker-controlled string to a bus-safe form: capped
+// SafeField reduces an attacker-controlled string to a bus-safe form: capped
 // length, then only [A-Za-z0-9.:/_-]; anything else is hex-escaped. It runs at
-// the boundary before the value reaches an events.Event ([C1] defense in depth;
-// the dashboard also output-encodes). "Printable ASCII" is NOT enough — '<' is
+// the boundary before the value reaches an Event ([C1] defense in depth; the
+// dashboard also output-encodes). "Printable ASCII" is NOT enough — '<' is
 // printable — so this is an allowlist, not a control-char filter.
 // Note: max bounds the INPUT byte length; the OUTPUT may be longer because
 // non-allowlisted bytes expand to \xNN (4 chars each).
-func safeField(s string, max int) string {
+func SafeField(s string, max int) string {
 	if len(s) > max {
 		s = s[:max]
 	}

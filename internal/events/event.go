@@ -21,6 +21,10 @@ const (
 	KindEscape Kind = "escape"
 	// KindSystem is platform/diagnostic noise.
 	KindSystem Kind = "system"
+	// KindSubject is one row of the contained subject's transcript: a command the
+	// host-side broker ran inside the box and its (sanitised) output. The subject's
+	// escape *attempts* still surface independently as KindEscape.
+	KindSubject Kind = "subject"
 )
 
 // Event is one observation made from the host side. It is deliberately flat.

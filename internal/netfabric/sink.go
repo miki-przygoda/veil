@@ -85,6 +85,6 @@ func (s *Sink) handle(conn net.Conn) {
 	e := events.New(events.KindTraffic, hostIP(conn.RemoteAddr()), "sink connect")
 	e.Dest = s.gateway
 	e.Protocol = "tcp"
-	e.Detail = fmt.Sprintf("port %d %s", port, safeField(string(buf[:n]), 120))
+	e.Detail = fmt.Sprintf("port %d %s", port, events.SafeField(string(buf[:n]), 120))
 	s.bus.Publish(e)
 }

@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -159,5 +160,63 @@ func TestCreateSpecStaticIPAndCapAdd(t *testing.T) {
 	def, _ := json.Marshal(CreateSpec{Image: "x"})
 	if strings.Contains(string(def), "NetworkingConfig") || strings.Contains(string(def), "CapAdd") {
 		t.Errorf("empty spec must omit NetworkingConfig/CapAdd: %s", def)
+	}
+}
+
+func TestExecEndpoints(t *testing.T) {
+	mux := http.NewServeMux()
+	vp := "/" + dockerAPIVersion
+	mux.HandleFunc(vp+"/containers/cid/exec", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["Tty"] != true || body["AttachStdout"] != true || body["AttachStderr"] != true {
+			t.Errorf("exec create body = %v, want Tty+AttachStdout+AttachStderr true", body)
+		}
+		cmd, _ := body["Cmd"].([]any)
+		if len(cmd) != 3 || cmd[0] != "/bin/sh" || cmd[1] != "-c" {
+			t.Errorf("exec create Cmd = %v, want [/bin/sh -c ...]", body["Cmd"])
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"Id":"exec-9"}`))
+	})
+	mux.HandleFunc(vp+"/exec/exec-9/start", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["Detach"] != false || body["Tty"] != true {
+			t.Errorf("exec start body = %v, want Detach=false Tty=true", body)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("total 0\nhello\n"))
+	})
+	mux.HandleFunc(vp+"/exec/exec-9/json", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ExitCode":42,"Running":false}`))
+	})
+	// A flooding exec must be bounded to execOutputCap.
+	mux.HandleFunc(vp+"/exec/flood/start", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(bytes.Repeat([]byte("A"), execOutputCap+4096))
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	cli := newClientWithHTTP(srv.Client(), srv.URL)
+	ctx := context.Background()
+
+	execID, err := cli.ExecCreate(ctx, "cid", []string{"/bin/sh", "-c", "ls"})
+	if err != nil || execID != "exec-9" {
+		t.Fatalf("ExecCreate: id=%q err=%v", execID, err)
+	}
+	out, err := cli.ExecStart(ctx, execID)
+	if err != nil || string(out) != "total 0\nhello\n" {
+		t.Fatalf("ExecStart: out=%q err=%v", out, err)
+	}
+	code, err := cli.ExecInspect(ctx, execID)
+	if err != nil || code != 42 {
+		t.Fatalf("ExecInspect: code=%d err=%v", code, err)
+	}
+	flood, err := cli.ExecStart(ctx, "flood")
+	if err != nil || len(flood) != execOutputCap {
+		t.Fatalf("ExecStart cap: got %d bytes err=%v, want %d", len(flood), err, execOutputCap)
 	}
 }

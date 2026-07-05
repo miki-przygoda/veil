@@ -5,7 +5,10 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/miki-przygoda/veil/internal/events"
 	"github.com/miki-przygoda/veil/internal/netfabric"
@@ -117,5 +120,83 @@ func TestSelectSandboxStubIgnoresDNS(t *testing.T) {
 	box, err := selectSandbox(context.Background(), "stub", "", []string{"1.2.3.4"}, events.NewBus(4), quietLog())
 	if err != nil || box == nil {
 		t.Fatalf("stub backend: box=%v err=%v", box, err)
+	}
+}
+
+func drain(feed <-chan events.Event, ms int) []events.Event {
+	var out []events.Event
+	to := time.After(time.Duration(ms) * time.Millisecond)
+	for {
+		select {
+		case e := <-feed:
+			out = append(out, e)
+		case <-to:
+			return out
+		}
+	}
+}
+
+func drainKinds(feed <-chan events.Event, ms int) map[events.Kind]int {
+	out := map[events.Kind]int{}
+	for _, e := range drain(feed, ms) {
+		out[e.Kind]++
+	}
+	return out
+}
+
+// execStub is a Sandbox (via the embedded Stub) that ALSO implements Execer,
+// standing in for the container backend in gating tests.
+type execStub struct {
+	*sandbox.Stub
+	ran [][]string
+}
+
+func (e *execStub) Exec(_ context.Context, cmd []string) (sandbox.ExecResult, error) {
+	e.ran = append(e.ran, cmd)
+	return sandbox.ExecResult{Output: []byte("ok"), ExitCode: 0}, nil
+}
+
+func TestMaybeStartSubjectSkipsNonExecer(t *testing.T) {
+	bus := events.NewBus(16)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+	// A plain Stub is a Sandbox but NOT an Execer.
+	maybeStartSubject(context.Background(), sandbox.NewStub("box", bus), "/nonexistent", time.Millisecond, bus, quietLog())
+
+	got := drainKinds(feed, 100)
+	if got[events.KindSystem] < 1 {
+		t.Error("non-Execer backend must emit a KindSystem skip note")
+	}
+	if got[events.KindSubject] != 0 {
+		t.Error("non-Execer backend must not run subject commands")
+	}
+}
+
+func TestMaybeStartSubjectRunsOnExecer(t *testing.T) {
+	bus := events.NewBus(16)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.txt")
+	if err := os.WriteFile(script, []byte("# go\nwhoami\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	box := &execStub{Stub: sandbox.NewStub("box", bus)}
+	maybeStartSubject(context.Background(), box, script, time.Millisecond, bus, quietLog())
+
+	got := drainKinds(feed, 300)
+	if got[events.KindSubject] < 1 {
+		t.Error("Execer backend must publish a KindSubject transcript event")
+	}
+}
+
+func TestMaybeStartSubjectOffWhenNoFile(t *testing.T) {
+	bus := events.NewBus(8)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+	maybeStartSubject(context.Background(), sandbox.NewStub("box", bus), "", time.Millisecond, bus, quietLog())
+	if len(drain(feed, 50)) != 0 {
+		t.Error("empty -subject must be a no-op")
 	}
 }

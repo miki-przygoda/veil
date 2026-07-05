@@ -27,6 +27,13 @@ type fakeEngine struct {
 	commitID     string
 	commitErr    error
 	removeImgErr error
+
+	execID         string
+	execOut        []byte
+	execCode       int
+	execCreateErr  error
+	execStartErr   error
+	execInspectErr error
 }
 
 type fakeCall struct {
@@ -72,6 +79,24 @@ func (f *fakeEngine) commit(_ context.Context, id, ref string) (string, error) {
 func (f *fakeEngine) removeImage(_ context.Context, ref string) error {
 	f.calls = append(f.calls, fakeCall{op: "removeImage", ref: ref})
 	return f.removeImgErr
+}
+func (f *fakeEngine) execCreate(_ context.Context, id string, _ []string) (string, error) {
+	f.calls = append(f.calls, fakeCall{op: "execCreate", id: id})
+	if f.execCreateErr != nil {
+		return "", f.execCreateErr
+	}
+	if f.execID == "" {
+		return "exec-1", nil
+	}
+	return f.execID, nil
+}
+func (f *fakeEngine) execStart(_ context.Context, execID string) ([]byte, error) {
+	f.calls = append(f.calls, fakeCall{op: "execStart", id: execID})
+	return f.execOut, f.execStartErr
+}
+func (f *fakeEngine) execInspect(_ context.Context, execID string) (int, error) {
+	f.calls = append(f.calls, fakeCall{op: "execInspect", id: execID})
+	return f.execCode, f.execInspectErr
 }
 
 func (f *fakeEngine) ops() []string {

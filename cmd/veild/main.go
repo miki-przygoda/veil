@@ -23,6 +23,7 @@ import (
 	"github.com/miki-przygoda/veil/internal/netfabric"
 	"github.com/miki-przygoda/veil/internal/residents"
 	"github.com/miki-przygoda/veil/internal/sandbox"
+	"github.com/miki-przygoda/veil/internal/subject"
 	"github.com/miki-przygoda/veil/internal/viz"
 )
 
@@ -117,6 +118,7 @@ func main() {
 	tapMode := flag.String("tap", "packet", "tap backend: packet|stub")
 	resolverMode := flag.String("resolver", "on", "world DNS resolver + honeypot: on|off")
 	residentsMode := flag.String("residents", "on", "spawn synthetic resident hosts on veil-net: on|off")
+	subjectFile := flag.String("subject", "", "run a scripted subject: path to a command file (one per line); empty = off")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -249,6 +251,11 @@ func main() {
 		}
 	}()
 
+	// The contained subject pokes at a fully-alive world (residents answering,
+	// resolver bound, honeypot armed), so its escape attempts get caught. Started
+	// last; no teardown (execs are ephemeral).
+	maybeStartSubject(ctx, box, *subjectFile, 2*time.Second, bus, log)
+
 	// Live observation feed. Blocks until shutdown.
 	server := viz.NewServer(":8080", bus, log)
 	runErr := server.Run(ctx)
@@ -270,4 +277,41 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("shutdown complete")
+}
+
+// maybeStartSubject launches a scripted subject session against the box when
+// -subject names a file. It requires the Execer capability (container backend);
+// on the stub backend it publishes a KindSystem note and returns. It is never
+// fatal — a missing/broken script must not take down the observation plane. The
+// session rides ctx and holds no host resources, so it joins no teardown path.
+func maybeStartSubject(ctx context.Context, box sandbox.Sandbox, file string, pace time.Duration, bus *events.Bus, log *slog.Logger) {
+	if file == "" {
+		return
+	}
+	skip := func(detail string) {
+		e := events.New(events.KindSystem, "subject", "skipped")
+		e.Detail = detail
+		bus.Publish(e)
+		log.Warn("subject harness skipped", "detail", detail)
+	}
+
+	ex, ok := box.(sandbox.Execer)
+	if !ok {
+		skip("subject harness needs the container backend")
+		return
+	}
+	f, err := os.Open(file)
+	if err != nil {
+		skip("cannot open subject script: " + events.SafeField(err.Error(), 120))
+		return
+	}
+	defer f.Close()
+	cmds, err := subject.ParseScript(f)
+	if err != nil {
+		skip("cannot parse subject script: " + events.SafeField(err.Error(), 120))
+		return
+	}
+	sess := subject.NewSession(ex, bus, log, pace)
+	go sess.Run(ctx, cmds)
+	log.Info("subject session started", "commands", len(cmds), "script", file)
 }

@@ -77,7 +77,7 @@ func (r *Resolver) Serve(ctx context.Context, conn net.PacketConn) error {
 		// value ([L7]); Dest is the subject-controlled name, sanitised ([C1]).
 		e := events.New(events.KindTraffic, hostIP(addr), "query")
 		e.Protocol = "dns"
-		e.Dest = safeField(qname, 253)
+		e.Dest = events.SafeField(qname, 253)
 		detail := "sinkholed"
 		if world {
 			detail = "world"
