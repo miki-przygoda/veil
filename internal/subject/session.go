@@ -45,7 +45,7 @@ func (s *Session) Run(ctx context.Context, commands []string) {
 		}
 		s.bus.Publish(e)
 		if s.log != nil {
-			s.log.Info("subject command", "n", i+1, "of", len(commands))
+			s.log.Info("subject command", "n", i+1, "total", len(commands))
 		}
 
 		if s.pace > 0 && i < len(commands)-1 {

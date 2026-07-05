@@ -2,6 +2,7 @@ package subject
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -67,5 +68,52 @@ func TestSessionRunStopsOnCancel(t *testing.T) {
 	NewSession(fx, events.NewBus(8), quietLog(), time.Hour).Run(ctx, []string{"a", "b", "c"})
 	if len(fx.got) != 0 {
 		t.Errorf("cancelled session ran %d commands, want 0", len(fx.got))
+	}
+}
+
+func TestSessionRunSanitisesHostileCommand(t *testing.T) {
+	fx := &fakeExecer{out: []byte("ok"), code: 0}
+	bus := events.NewBus(8)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+
+	NewSession(fx, bus, quietLog(), 0).Run(context.Background(), []string{"whoami\x00<script>"})
+
+	var subj []events.Event
+	for _, e := range drain(feed, 200) {
+		if e.Kind == events.KindSubject {
+			subj = append(subj, e)
+		}
+	}
+	if len(subj) != 1 {
+		t.Fatalf("KindSubject events = %d, want 1", len(subj))
+	}
+	if strings.Contains(subj[0].Action, "\x00") || strings.Contains(subj[0].Action, "<script>") {
+		t.Errorf("Action not sanitised: %q", subj[0].Action)
+	}
+}
+
+func TestSessionRunPublishesOnExecError(t *testing.T) {
+	fx := &fakeExecer{err: errors.New("boom <x>")}
+	bus := events.NewBus(8)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+
+	NewSession(fx, bus, quietLog(), 0).Run(context.Background(), []string{"badcmd"})
+
+	var subj []events.Event
+	for _, e := range drain(feed, 200) {
+		if e.Kind == events.KindSubject {
+			subj = append(subj, e)
+		}
+	}
+	if len(subj) != 1 {
+		t.Fatalf("KindSubject events = %d, want 1 (an exec error is not a dropped command)", len(subj))
+	}
+	if !strings.Contains(subj[0].Detail, "exec error") {
+		t.Errorf("Detail = %q, want an exec-error detail", subj[0].Detail)
+	}
+	if strings.Contains(subj[0].Detail, "<x>") {
+		t.Errorf("error text not sanitised: %q", subj[0].Detail)
 	}
 }
