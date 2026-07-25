@@ -56,7 +56,12 @@ func (c *Container) OpenShell(ctx context.Context) (Shell, error) {
 	if err != nil {
 		return nil, fmt.Errorf("shell: attach: %w", err)
 	}
-	sh, err := newShell(conn, newNonce())
+	nonce, err := newNonce()
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("shell: nonce: %w", err)
+	}
+	sh, err := newShell(conn, nonce)
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("shell: init: %w", err)
@@ -88,10 +93,12 @@ func newShell(conn io.ReadWriteCloser, nonce string) (*containerShell, error) {
 	return s, nil
 }
 
-func newNonce() string {
+func newNonce() (string, error) {
 	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 func (s *containerShell) Run(ctx context.Context, line string) (ExecResult, error) {

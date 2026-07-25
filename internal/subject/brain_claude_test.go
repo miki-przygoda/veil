@@ -129,7 +129,10 @@ func TestClaudeBrainDecideSendsHistoryAndSeed(t *testing.T) {
 		Decide(context.Background(), "goal", hist); err != nil {
 		t.Fatal(err)
 	}
-	if len(withHistory) != 2 || withHistory[0]["role"] != "assistant" || withHistory[1]["role"] != "user" {
-		t.Errorf("history mapping = %v, want [assistant, user]", withHistory)
+	if len(withHistory) != 3 ||
+		withHistory[0]["role"] != "user" ||
+		withHistory[1]["role"] != "assistant" ||
+		withHistory[2]["role"] != "user" {
+		t.Errorf("history mapping = %v, want [user(seed), assistant, user]", withHistory)
 	}
 }

@@ -17,9 +17,9 @@ const (
 	claudeDefaultModel = "claude-opus-5" // per the claude-api skill; override with VEIL_SUBJECT_MODEL
 	// claudeMaxTokens bounds the reply. Current models run adaptive thinking ON by
 	// default and max_tokens caps thinking+text together, so a tight budget can be
-	// spent entirely on thinking and truncate the command. 2048 leaves headroom;
+	// spent entirely on thinking and truncate the command. 4096 leaves headroom;
 	// Decide reads only the "text" block, so the (empty-text) thinking block is ignored.
-	claudeMaxTokens = 2048
+	claudeMaxTokens = 4096
 	claudeStopToken = "STOP"
 )
 
@@ -131,14 +131,13 @@ func claudeSystemPrompt(goal string) string {
 }
 
 func claudeMessages(history []Turn) []map[string]any {
-	var msgs []map[string]any
+	// Always seed a user turn first: the Messages API requires messages[0].role == "user".
+	// Result: user(seed), assistant(cmd1), user(result1), assistant(cmd2), … — user-first,
+	// alternating, ending on a user turn so the API generates the next command.
+	msgs := []map[string]any{{"role": "user", "content": "Begin. What is your first command?"}}
 	for _, t := range history {
 		msgs = append(msgs, map[string]any{"role": "assistant", "content": t.Command})
 		msgs = append(msgs, map[string]any{"role": "user", "content": fmt.Sprintf("exit=%d\n%s", t.ExitCode, t.Output)})
-	}
-	if len(msgs) == 0 {
-		// The Messages API requires a non-empty messages array.
-		msgs = append(msgs, map[string]any{"role": "user", "content": "Begin. What is your first command?"})
 	}
 	return msgs
 }
