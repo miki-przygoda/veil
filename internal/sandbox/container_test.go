@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"slices"
 	"testing"
@@ -34,6 +35,9 @@ type fakeEngine struct {
 	execCreateErr  error
 	execStartErr   error
 	execInspectErr error
+
+	attach        io.ReadWriteCloser
+	execAttachErr error
 }
 
 type fakeCall struct {
@@ -97,6 +101,13 @@ func (f *fakeEngine) execStart(_ context.Context, execID string) ([]byte, error)
 func (f *fakeEngine) execInspect(_ context.Context, execID string) (int, error) {
 	f.calls = append(f.calls, fakeCall{op: "execInspect", id: execID})
 	return f.execCode, f.execInspectErr
+}
+func (f *fakeEngine) execAttach(_ context.Context, id string, _ []string) (io.ReadWriteCloser, error) {
+	f.calls = append(f.calls, fakeCall{op: "execAttach", id: id})
+	if f.execAttachErr != nil {
+		return nil, f.execAttachErr
+	}
+	return f.attach, nil
 }
 
 func (f *fakeEngine) ops() []string {
