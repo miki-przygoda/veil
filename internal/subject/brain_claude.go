@@ -70,7 +70,10 @@ func (b *claudeBrain) Decide(ctx context.Context, goal string, history []Turn) (
 		return Action{}, fmt.Errorf("claude: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return Action{}, fmt.Errorf("claude: read body: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return Action{}, fmt.Errorf("claude: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
@@ -109,7 +112,11 @@ func parseAction(text string) Action {
 		if strings.HasPrefix(l, claudeStopToken) {
 			return Action{Stop: true, Reason: strings.TrimSpace(strings.TrimPrefix(l, claudeStopToken))}
 		}
-		return Action{Command: strings.Trim(l, "`")}
+		l = strings.Trim(l, "`")
+		if l == "" {
+			continue // a bare fence line (``` etc.) — keep scanning for the real command
+		}
+		return Action{Command: l}
 	}
 	return Action{Stop: true, Reason: "empty response"}
 }
