@@ -220,3 +220,52 @@ func TestExecEndpoints(t *testing.T) {
 		t.Fatalf("ExecStart cap: got %d bytes err=%v, want %d", len(flood), err, execOutputCap)
 	}
 }
+
+func TestExecAttach(t *testing.T) {
+	vp := "/" + dockerAPIVersion
+	mux := http.NewServeMux()
+	mux.HandleFunc(vp+"/containers/cid/exec", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["AttachStdin"] != true || body["Tty"] != false {
+			t.Errorf("attach create body = %v, want AttachStdin=true Tty=false", body)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"Id":"exec-9"}`))
+	})
+	mux.HandleFunc(vp+"/exec/exec-9/start", func(w http.ResponseWriter, _ *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("ResponseWriter is not a Hijacker")
+			return
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		buf.WriteString("HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+		payload := "hi\n"
+		buf.Write([]byte{1, 0, 0, 0, 0, 0, 0, byte(len(payload))}) // stdout frame header
+		buf.WriteString(payload)
+		_ = buf.Flush()
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newClientWithHTTP(srv.Client(), srv.URL)
+	conn, err := c.ExecAttach(context.Background(), "cid", []string{"/bin/sh"})
+	if err != nil {
+		t.Fatalf("ExecAttach: %v", err)
+	}
+	defer conn.Close()
+
+	stream, payload, err := DemuxFrame(conn)
+	if err != nil {
+		t.Fatalf("DemuxFrame: %v", err)
+	}
+	if stream != 1 || string(payload) != "hi\n" {
+		t.Errorf("frame = stream %d %q, want 1 \"hi\\n\"", stream, payload)
+	}
+}

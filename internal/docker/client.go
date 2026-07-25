@@ -1,8 +1,10 @@
 package docker
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -84,7 +87,8 @@ const dockerAPIVersion = "v1.44"
 // standard library.
 type Client struct {
 	httpc *http.Client
-	root  string // scheme+host, e.g. http://docker (real) or the httptest URL
+	root  string                                      // scheme+host, e.g. http://docker (real) or the httptest URL
+	dial  func(ctx context.Context) (net.Conn, error) // for hijacked (attached) execs
 }
 
 // New builds a Client for the given DOCKER_HOST value. Empty means the default
@@ -104,13 +108,29 @@ func New(host string) (*Client, error) {
 			return d.DialContext(ctx, "unix", socket)
 		},
 	}
-	return &Client{httpc: &http.Client{Transport: tr, Timeout: 30 * time.Second}, root: "http://docker"}, nil
+	dialFn := func(ctx context.Context) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "unix", socket)
+	}
+	return &Client{
+		httpc: &http.Client{Transport: tr, Timeout: 30 * time.Second},
+		root:  "http://docker",
+		dial:  dialFn,
+	}, nil
 }
 
 // newClientWithHTTP injects an HTTP client + root URL (used by tests against
 // an httptest server, so the request/response contract is exercised offline).
 func newClientWithHTTP(httpc *http.Client, root string) *Client {
-	return &Client{httpc: httpc, root: root}
+	c := &Client{httpc: httpc, root: root}
+	if u, err := url.Parse(root); err == nil && u.Host != "" {
+		host := u.Host
+		c.dial = func(ctx context.Context) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "tcp", host)
+		}
+	}
+	return c
 }
 
 func (c *Client) versioned(path string) string {
@@ -432,4 +452,105 @@ func (c *Client) RemoveNetwork(ctx context.Context, id string) error {
 		return decodeError(resp)
 	}
 	return nil
+}
+
+// hijackedConn presents a hijacked HTTP connection as a raw duplex stream:
+// reads come from the buffered reader (which may hold bytes already read past
+// the response headers), writes go straight to the underlying conn.
+type hijackedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (h *hijackedConn) Read(p []byte) (int, error) { return h.r.Read(p) }
+
+// ExecAttach creates an interactive exec (stdin+stdout+stderr, no TTY) running
+// cmd, starts it on a hijacked connection, and returns the raw duplex stream.
+// The caller writes stdin to it and reads Docker's multiplexed stdout/stderr
+// frames with DemuxFrame. Closing the returned conn ends the exec. Tty:false
+// (framed, no echo, no prompt) is deliberate — it makes programmatic framing
+// reliable.
+func (c *Client) ExecAttach(ctx context.Context, id string, cmd []string) (net.Conn, error) {
+	create := map[string]any{
+		"AttachStdin":  true,
+		"AttachStdout": true,
+		"AttachStderr": true,
+		"Tty":          false,
+		"Cmd":          cmd,
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/containers/"+id+"/exec", nil, create)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusCreated {
+		defer resp.Body.Close()
+		return nil, decodeError(resp)
+	}
+	execID, err := decodeID(resp)
+	resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := c.dial(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrEngineUnavailable, err)
+	}
+	reqBody := `{"Detach":false,"Tty":false}`
+	req := "POST /" + dockerAPIVersion + "/exec/" + execID + "/start HTTP/1.1\r\n" +
+		"Host: docker\r\n" +
+		"Content-Type: application/json\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Upgrade: tcp\r\n" +
+		"Content-Length: " + strconv.Itoa(len(reqBody)) + "\r\n\r\n" +
+		reqBody
+	if _, err := conn.Write([]byte(req)); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("%w: %v", ErrEngineUnavailable, err)
+	}
+
+	br := bufio.NewReader(conn)
+	statusLine, err := br.ReadString('\n')
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("exec attach: read status: %w", err)
+	}
+	parts := strings.SplitN(strings.TrimSpace(statusLine), " ", 3)
+	if len(parts) < 2 {
+		conn.Close()
+		return nil, fmt.Errorf("exec attach: bad status line %q", statusLine)
+	}
+	code, _ := strconv.Atoi(parts[1])
+	if code != http.StatusSwitchingProtocols && code != http.StatusOK {
+		conn.Close()
+		return nil, &engineError{status: code, message: "exec start"}
+	}
+	// Consume headers up to the blank line; the rest of br is the raw stream.
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("exec attach: read headers: %w", err)
+		}
+		if line == "\r\n" || line == "\n" {
+			break
+		}
+	}
+	return &hijackedConn{Conn: conn, r: br}, nil
+}
+
+// DemuxFrame reads one Docker multiplexed stream frame from r and returns its
+// stream type (1=stdout, 2=stderr) and payload. Returns io.EOF when the stream
+// ends between frames.
+func DemuxFrame(r io.Reader) (stream byte, payload []byte, err error) {
+	var hdr [8]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return 0, nil, err
+	}
+	n := binary.BigEndian.Uint32(hdr[4:8])
+	payload = make([]byte, n)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return 0, nil, err
+	}
+	return hdr[0], payload, nil
 }
