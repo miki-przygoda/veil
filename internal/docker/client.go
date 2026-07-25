@@ -102,20 +102,17 @@ func New(host string) (*Client, error) {
 	default:
 		return nil, fmt.Errorf("unsupported DOCKER_HOST %q (only unix:// supported)", host)
 	}
-	tr := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", socket)
-		},
-	}
-	dialFn := func(ctx context.Context) (net.Conn, error) {
+	dialUnix := func(ctx context.Context) (net.Conn, error) {
 		var d net.Dialer
 		return d.DialContext(ctx, "unix", socket)
+	}
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { return dialUnix(ctx) },
 	}
 	return &Client{
 		httpc: &http.Client{Transport: tr, Timeout: 30 * time.Second},
 		root:  "http://docker",
-		dial:  dialFn,
+		dial:  dialUnix,
 	}, nil
 }
 
@@ -313,6 +310,12 @@ func (c *Client) RemoveImage(ctx context.Context, ref string) error {
 // execOutputCap bounds how much of an exec's output we read, so a runaway
 // command inside the box cannot flood the observer.
 const execOutputCap = 64 << 10 // 64 KiB
+
+// maxFrameSize bounds a single Docker stream frame's declared payload length so
+// a corrupt/hostile length header cannot drive an unbounded allocation. Real
+// Docker frames are far smaller (its multiplexer chunks at ~32 KiB); 1 MiB is
+// generous headroom.
+const maxFrameSize = 1 << 20
 
 // ExecCreate creates an exec instance in the container and returns its ID.
 // TTY mode gives a single merged stdout+stderr stream (a transcript row).
@@ -513,7 +516,7 @@ func (c *Client) ExecAttach(ctx context.Context, id string, cmd []string) (net.C
 	statusLine, err := br.ReadString('\n')
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("exec attach: read status: %w", err)
+		return nil, fmt.Errorf("%w: exec attach read status: %v", ErrEngineUnavailable, err)
 	}
 	parts := strings.SplitN(strings.TrimSpace(statusLine), " ", 3)
 	if len(parts) < 2 {
@@ -530,7 +533,7 @@ func (c *Client) ExecAttach(ctx context.Context, id string, cmd []string) (net.C
 		line, err := br.ReadString('\n')
 		if err != nil {
 			conn.Close()
-			return nil, fmt.Errorf("exec attach: read headers: %w", err)
+			return nil, fmt.Errorf("%w: exec attach read headers: %v", ErrEngineUnavailable, err)
 		}
 		if line == "\r\n" || line == "\n" {
 			break
@@ -548,6 +551,9 @@ func DemuxFrame(r io.Reader) (stream byte, payload []byte, err error) {
 		return 0, nil, err
 	}
 	n := binary.BigEndian.Uint32(hdr[4:8])
+	if n > maxFrameSize {
+		return 0, nil, fmt.Errorf("docker: stream frame too large (%d bytes)", n)
+	}
 	payload = make([]byte, n)
 	if _, err := io.ReadFull(r, payload); err != nil {
 		return 0, nil, err

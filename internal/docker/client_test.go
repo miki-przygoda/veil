@@ -269,3 +269,11 @@ func TestExecAttach(t *testing.T) {
 		t.Errorf("frame = stream %d %q, want 1 \"hi\\n\"", stream, payload)
 	}
 }
+
+func TestDemuxFrameRejectsOversizeFrame(t *testing.T) {
+	// header claiming ~4 GiB payload, no body
+	hdr := []byte{1, 0, 0, 0, 0xff, 0xff, 0xff, 0xff}
+	if _, _, err := DemuxFrame(bytes.NewReader(hdr)); err == nil {
+		t.Error("DemuxFrame must reject a frame whose declared length exceeds maxFrameSize")
+	}
+}
