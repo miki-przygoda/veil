@@ -200,3 +200,66 @@ func TestMaybeStartSubjectOffWhenNoFile(t *testing.T) {
 		t.Error("empty -subject must be a no-op")
 	}
 }
+
+// shellStub is a Sandbox (via embedded Stub) that ALSO implements Sheller,
+// standing in for the container backend in autonomous-subject gating tests.
+type shellStub struct {
+	*sandbox.Stub
+}
+
+func (s *shellStub) OpenShell(_ context.Context) (sandbox.Shell, error) {
+	return &noopShell{}, nil
+}
+
+type noopShell struct{}
+
+func (noopShell) Run(_ context.Context, _ string) (sandbox.ExecResult, error) {
+	return sandbox.ExecResult{Output: []byte("ok"), ExitCode: 0}, nil
+}
+func (noopShell) Close() error { return nil }
+
+func TestMaybeStartAutoSubjectSkipsNonSheller(t *testing.T) {
+	bus := events.NewBus(16)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+	// A plain Stub is a Sandbox but NOT a Sheller.
+	maybeStartAutoSubject(context.Background(), sandbox.NewStub("box", bus), "g", "scripted", 5, time.Millisecond, bus, quietLog())
+
+	got := drainKinds(feed, 150)
+	if got[events.KindSystem] < 1 {
+		t.Error("non-Sheller backend must emit a KindSystem skip note")
+	}
+	if got[events.KindSubject] != 0 {
+		t.Error("non-Sheller backend must not run an autonomous subject")
+	}
+}
+
+func TestMaybeStartAutoSubjectSkipsClaudeWithoutKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	bus := events.NewBus(16)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+	box := &shellStub{Stub: sandbox.NewStub("box", bus)}
+	maybeStartAutoSubject(context.Background(), box, "g", "claude", 5, time.Millisecond, bus, quietLog())
+
+	got := drainKinds(feed, 150)
+	if got[events.KindSystem] < 1 {
+		t.Error("claude brain without ANTHROPIC_API_KEY must skip with a KindSystem note")
+	}
+	if got[events.KindSubject] != 0 {
+		t.Error("claude brain without a key must not run")
+	}
+}
+
+func TestMaybeStartAutoSubjectRunsScripted(t *testing.T) {
+	bus := events.NewBus(64)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+	box := &shellStub{Stub: sandbox.NewStub("box", bus)}
+	maybeStartAutoSubject(context.Background(), box, "escape", "scripted", 3, time.Millisecond, bus, quietLog())
+
+	got := drainKinds(feed, 400)
+	if got[events.KindSubject] < 3 {
+		t.Errorf("Sheller backend must publish KindSubject events (got %d)", got[events.KindSubject])
+	}
+}

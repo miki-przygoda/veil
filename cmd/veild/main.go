@@ -119,6 +119,9 @@ func main() {
 	resolverMode := flag.String("resolver", "on", "world DNS resolver + honeypot: on|off")
 	residentsMode := flag.String("residents", "on", "spawn synthetic resident hosts on veil-net: on|off")
 	subjectFile := flag.String("subject", "", "run a scripted subject: path to a command file (one per line); empty = off")
+	subjectGoal := flag.String("subject-goal", "", "run an autonomous subject with this goal; empty = off")
+	subjectBrain := flag.String("subject-brain", "scripted", "autonomous subject brain: scripted|claude")
+	subjectSteps := flag.Int("subject-steps", 12, "autonomous subject step budget")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -254,7 +257,19 @@ func main() {
 	// The contained subject pokes at a fully-alive world (residents answering,
 	// resolver bound, honeypot armed), so its escape attempts get caught. Started
 	// last; no teardown (execs are ephemeral).
-	maybeStartSubject(ctx, box, *subjectFile, 2*time.Second, bus, log)
+	// A goal turns on the autonomous subject; otherwise the scripted -subject
+	// file path (Slice 1) runs. If both are set, autonomous wins and the file is
+	// skipped with an observable note.
+	if *subjectGoal != "" {
+		if *subjectFile != "" {
+			e := events.New(events.KindSystem, "subject", "scripted skipped")
+			e.Detail = "both -subject and -subject-goal set; running autonomous"
+			bus.Publish(e)
+		}
+		maybeStartAutoSubject(ctx, box, *subjectGoal, *subjectBrain, *subjectSteps, 2*time.Second, bus, log)
+	} else {
+		maybeStartSubject(ctx, box, *subjectFile, 2*time.Second, bus, log)
+	}
 
 	// Live observation feed. Blocks until shutdown.
 	server := viz.NewServer(":8080", bus, log)
@@ -314,4 +329,46 @@ func maybeStartSubject(ctx context.Context, box sandbox.Sandbox, file string, pa
 	sess := subject.NewSession(ex, bus, log, pace)
 	go sess.Run(ctx, cmds)
 	log.Info("subject session started", "commands", len(cmds), "script", file)
+}
+
+// maybeStartAutoSubject launches an autonomous subject against the box when
+// -subject-goal is set. It requires the Sheller capability (container backend);
+// on the stub backend, an unset ANTHROPIC_API_KEY for the claude brain, or an
+// OpenShell failure, it publishes a KindSystem note and returns. Never fatal —
+// a broken subject must not take down the observation plane. The Autopilot
+// closes the shell when the run ends, so there is no teardown path here.
+func maybeStartAutoSubject(ctx context.Context, box sandbox.Sandbox, goal, brainKind string, steps int, pace time.Duration, bus *events.Bus, log *slog.Logger) {
+	skip := func(detail string) {
+		e := events.New(events.KindSystem, "subject", "auto skipped")
+		e.Detail = detail
+		bus.Publish(e)
+		log.Warn("autonomous subject skipped", "detail", detail)
+	}
+
+	sh, ok := box.(sandbox.Sheller)
+	if !ok {
+		skip("autonomous subject needs the container backend")
+		return
+	}
+
+	var brain subject.Brain
+	switch brainKind {
+	case "claude":
+		key := os.Getenv("ANTHROPIC_API_KEY")
+		if key == "" {
+			skip("subject-brain=claude requires ANTHROPIC_API_KEY")
+			return
+		}
+		brain = subject.NewClaudeBrain(key, os.Getenv("VEIL_SUBJECT_MODEL"))
+	default: // "scripted"
+		brain = subject.NewScriptedBrain()
+	}
+
+	shell, err := sh.OpenShell(ctx)
+	if err != nil {
+		skip("cannot open subject shell: " + events.SafeField(err.Error(), 120))
+		return
+	}
+	go subject.NewAutopilot(brain, shell, bus, log, pace).Run(ctx, goal, steps)
+	log.Info("autonomous subject started", "brain", brainKind, "goal", goal, "steps", steps)
 }

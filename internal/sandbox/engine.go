@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"io"
 
 	"github.com/miki-przygoda/veil/internal/docker"
 )
@@ -26,6 +27,7 @@ type engine interface {
 	execCreate(ctx context.Context, id string, cmd []string) (execID string, err error)
 	execStart(ctx context.Context, execID string) (output []byte, err error)
 	execInspect(ctx context.Context, execID string) (exitCode int, err error)
+	execAttach(ctx context.Context, id string, cmd []string) (io.ReadWriteCloser, error)
 }
 
 // dockerAdapter makes the exported *docker.Client satisfy the unexported engine.
@@ -58,6 +60,9 @@ func (a dockerAdapter) execStart(ctx context.Context, execID string) ([]byte, er
 }
 func (a dockerAdapter) execInspect(ctx context.Context, execID string) (int, error) {
 	return a.c.ExecInspect(ctx, execID)
+}
+func (a dockerAdapter) execAttach(ctx context.Context, id string, cmd []string) (io.ReadWriteCloser, error) {
+	return a.c.ExecAttach(ctx, id, cmd)
 }
 
 // compile-time check that the adapter satisfies the engine interface.
