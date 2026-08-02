@@ -10,6 +10,19 @@ import (
 	"github.com/miki-przygoda/veil/internal/sandbox"
 )
 
+// cmdStartedDetail marks the pre-exec "command started" transcript row, distinguishing it
+// from the post-exec result row. Publishing it BEFORE exec means the escape scorer observes
+// the command before any escape it triggers (deterministic FIFO ordering on the bus), so the
+// escape is attributed to the command that caused it.
+const cmdStartedDetail = "started"
+
+// commandStarted builds the pre-exec transcript marker for one command line.
+func commandStarted(line string) events.Event {
+	e := events.New(events.KindSubject, "subject", events.SafeField(line, 120))
+	e.Detail = cmdStartedDetail
+	return e
+}
+
 // Session drives a parsed script against the box, paced, publishing exactly one
 // KindSubject event per command. It holds no host resources — each exec is
 // ephemeral — so there is nothing to tear down; it stops when ctx is cancelled.
@@ -35,6 +48,7 @@ func (s *Session) Run(ctx context.Context, commands []string) {
 		default:
 		}
 
+		s.bus.Publish(commandStarted(line))
 		res, err := s.broker.Run(ctx, line)
 		// Both the command and its output are subject-controlled -> sanitise ([C1]).
 		e := events.New(events.KindSubject, "subject", events.SafeField(line, 120))

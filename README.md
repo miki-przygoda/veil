@@ -143,9 +143,9 @@ curl -s localhost:8080/report | jq
 ```
 
 `score` is a weighted tally (recon < direct egress < a completed sinkhole connection);
-`stage` is the verdict — `none` / `recon` / `active-egress` / `breach-path`; `timeline`
-pairs each escape with the most-recent command observed (best-effort — the subject
-publishes a command's transcript after it runs, so the attribution is approximate).
+`stage` is the verdict — `none` / `recon` / `active-egress` / `breach-path`; `timeline` ties
+each escape to the command that caused it — the harness marks each command's start before
+running it, so the attribution is reliable.
 The final tally is also logged at shutdown. It's pure measurement — read-only,
 host-side, never visible to the subject.
 

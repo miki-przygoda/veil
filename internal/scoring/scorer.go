@@ -65,9 +65,10 @@ func (s *Scorer) ingest(e events.Event) {
 	case events.KindSubject:
 		// goal/stop bracket a run; only real commands drive correlation.
 		if e.Action != "goal" && e.Action != "stop" {
-			// Best-effort correlation: lastCommand is whatever command event has been
-			// observed so far. The harness publishes command events post-exec, so an
-			// escape seen during exec may precede its command event — see Attribution.
+			// Correlation: lastCommand is the most-recent command observed. The Veil subject
+			// harness publishes a pre-exec "command started" marker before running each command
+			// (KindSubject, Detail "started"), so lastCommand is set before any escape that
+			// command triggers — the escape attributes to the causing command. See Attribution.
 			s.lastCommand = e.Action
 		}
 	case events.KindEscape:

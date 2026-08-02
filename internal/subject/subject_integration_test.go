@@ -41,12 +41,12 @@ func TestSubjectIntegration(t *testing.T) {
 
 	var got []events.Event
 	for _, e := range drain(feed, 500) {
-		if e.Kind == events.KindSubject {
+		if e.Kind == events.KindSubject && e.Detail != cmdStartedDetail {
 			got = append(got, e)
 		}
 	}
 	if len(got) != 2 {
-		t.Fatalf("KindSubject events = %d, want 2", len(got))
+		t.Fatalf("KindSubject result events = %d, want 2", len(got))
 	}
 	if !strings.Contains(got[0].Detail, "veil-subject-ok") {
 		t.Errorf("echo transcript = %q, want it to contain veil-subject-ok", got[0].Detail)

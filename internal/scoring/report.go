@@ -56,13 +56,11 @@ func isMetadata(dest string) bool {
 	return false
 }
 
-// Attribution pairs one escape with the most-recent subject command the Scorer had
-// observed when the escape was processed. This is BEST-EFFORT, not a guaranteed cause:
-// the subject harness publishes a command's transcript event AFTER the command runs,
-// so an escape observed during that execution can arrive before its own command event
-// and be attributed to the prior command (or "(no preceding command)"). Treat Command
-// as an approximate hint. A reliable cause link needs a pre-exec command marker in the
-// harness (deferred follow-up).
+// Attribution pairs one escape with the subject command that caused it. Driven by the Veil
+// subject harness this is reliable: the harness publishes a pre-exec "command started" marker
+// (KindSubject, Detail "started") before running each command, so the scorer observes the
+// command before any escape that command triggers (deterministic FIFO bus ordering). Without
+// such a marker it degrades to the most-recent command observed.
 type Attribution struct {
 	Time    time.Time `json:"time"`
 	Vector  string    `json:"vector"`
