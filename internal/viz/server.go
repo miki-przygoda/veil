@@ -18,15 +18,17 @@ import (
 
 // Server serves the dashboard and the SSE event stream.
 type Server struct {
-	bus  *events.Bus
-	mux  *http.ServeMux
-	addr string
-	log  *slog.Logger
+	bus    *events.Bus
+	mux    *http.ServeMux
+	addr   string
+	log    *slog.Logger
+	report func() any // when non-nil, served at GET /report
 }
 
-// NewServer wires routes for the given bus.
-func NewServer(addr string, bus *events.Bus, log *slog.Logger) *Server {
-	s := &Server{bus: bus, mux: http.NewServeMux(), addr: addr, log: log}
+// NewServer wires routes for the given bus. When report is non-nil, GET /report
+// serves report() as JSON (the escape-score snapshot); nil omits that route.
+func NewServer(addr string, bus *events.Bus, log *slog.Logger, report func() any) *Server {
+	s := &Server{bus: bus, mux: http.NewServeMux(), addr: addr, log: log, report: report}
 	s.routes()
 	return s
 }
@@ -37,6 +39,9 @@ func (s *Server) routes() {
 		_, _ = w.Write([]byte("ok"))
 	})
 	s.mux.HandleFunc("GET /events", s.handleEvents)
+	if s.report != nil {
+		s.mux.HandleFunc("GET /report", s.handleReport)
+	}
 	s.mux.Handle("GET /", http.FileServer(http.Dir("web")))
 }
 
@@ -72,6 +77,15 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
 		}
+	}
+}
+
+// handleReport serves the current report snapshot as JSON. One-way, read-only:
+// the viewer pulls state; nothing flows back to the world.
+func (s *Server) handleReport(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(s.report()); err != nil {
+		http.Error(w, "report encode failed", http.StatusInternalServerError)
 	}
 }
 
