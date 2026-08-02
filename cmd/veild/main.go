@@ -23,6 +23,7 @@ import (
 	"github.com/miki-przygoda/veil/internal/netfabric"
 	"github.com/miki-przygoda/veil/internal/residents"
 	"github.com/miki-przygoda/veil/internal/sandbox"
+	"github.com/miki-przygoda/veil/internal/scoring"
 	"github.com/miki-przygoda/veil/internal/subject"
 	"github.com/miki-przygoda/veil/internal/viz"
 )
@@ -184,6 +185,12 @@ func main() {
 		}
 	}()
 
+	// Escape scoring: a host-side observer that grades the subject's escape attempts.
+	// Subscribes to the bus like the classifier; served on GET /report and logged at
+	// shutdown. Pure measurement — it pushes nothing back to the box.
+	scorer := scoring.NewScorer()
+	go func() { _ = scorer.Run(ctx, bus) }()
+
 	var dns []string
 	teardownHoneypot := func() {}
 	if *resolverMode == "on" && gateway != "" {
@@ -272,8 +279,10 @@ func main() {
 	}
 
 	// Live observation feed. Blocks until shutdown.
-	server := viz.NewServer(":8080", bus, log)
+	server := viz.NewServer(":8080", bus, log, func() any { return scorer.Report() })
 	runErr := server.Run(ctx)
+	rep := scorer.Report()
+	log.Info("escape score", "score", rep.Score, "stage", string(rep.Stage), "attempts", rep.Attempts)
 
 	// Tear the world down on the way out — clean shutdown or viz failure alike —
 	// so we don't leak a container. Bounded so a wedged daemon can't hang exit;

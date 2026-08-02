@@ -57,6 +57,7 @@ func (a *Autopilot) loop(ctx context.Context, goal string, maxSteps int) string 
 			return "brain stop"
 		}
 
+		a.bus.Publish(commandStarted(act.Command))
 		res, rerr := a.shell.Run(ctx, act.Command)
 		e := events.New(events.KindSubject, "subject", events.SafeField(act.Command, 120))
 		if rerr != nil {

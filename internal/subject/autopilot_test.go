@@ -61,16 +61,18 @@ func (b *recordingBrain) Decide(_ context.Context, goal string, history []Turn) 
 	return Action{Command: "cmd"}, nil
 }
 
-func subjEvents(feed <-chan events.Event, ms int) (goal, stop int, cmds []events.Event) {
+func subjEvents(feed <-chan events.Event, ms int) (goal, stop, started int, cmds []events.Event) {
 	for _, e := range drain(feed, ms) {
 		if e.Kind != events.KindSubject {
 			continue
 		}
-		switch e.Action {
-		case "goal":
+		switch {
+		case e.Action == "goal":
 			goal++
-		case "stop":
+		case e.Action == "stop":
 			stop++
+		case e.Detail == cmdStartedDetail:
+			started++
 		default:
 			cmds = append(cmds, e)
 		}
@@ -86,12 +88,15 @@ func TestAutopilotRunsScriptedPlanAndStops(t *testing.T) {
 
 	NewAutopilot(NewScriptedBrain(), fs, bus, quietLog(), 0).Run(context.Background(), "escape", 20)
 
-	goal, stop, cmds := subjEvents(feed, 300)
+	goal, stop, started, cmds := subjEvents(feed, 300)
 	if goal != 1 || stop != 1 {
 		t.Errorf("goal=%d stop=%d, want 1/1", goal, stop)
 	}
 	if len(cmds) != len(scriptedPlan) {
 		t.Errorf("command events = %d, want %d", len(cmds), len(scriptedPlan))
+	}
+	if started != len(scriptedPlan) {
+		t.Errorf("started markers = %d, want %d", started, len(scriptedPlan))
 	}
 	if !reflect.DeepEqual(fs.got, scriptedPlan) {
 		t.Errorf("ran %v, want %v", fs.got, scriptedPlan)
@@ -109,12 +114,15 @@ func TestAutopilotRespectsStepCap(t *testing.T) {
 
 	NewAutopilot(NewScriptedBrain(), fs, bus, quietLog(), 0).Run(context.Background(), "g", 3)
 
-	_, stop, cmds := subjEvents(feed, 200)
+	_, stop, started, cmds := subjEvents(feed, 200)
 	if len(cmds) != 3 {
 		t.Errorf("command events = %d, want 3 (step cap)", len(cmds))
 	}
 	if stop != 1 {
 		t.Errorf("stop events = %d, want 1", stop)
+	}
+	if started != 3 {
+		t.Errorf("started markers = %d, want 3", started)
 	}
 }
 
@@ -131,9 +139,12 @@ func TestAutopilotStopsOnCancel(t *testing.T) {
 	if len(fs.got) != 0 {
 		t.Errorf("cancelled run executed %d commands, want 0", len(fs.got))
 	}
-	_, stop, _ := subjEvents(feed, 100)
+	_, stop, started, _ := subjEvents(feed, 100)
 	if stop != 1 {
 		t.Error("cancelled run must still emit a stop event")
+	}
+	if started != 0 {
+		t.Errorf("cancelled run should publish no started markers; got %d", started)
 	}
 }
 
@@ -146,7 +157,7 @@ func TestAutopilotSanitisesCommandAndOutput(t *testing.T) {
 	NewAutopilot(&fixedBrain{cmds: []string{"whoami\x00<script>"}}, fs, bus, quietLog(), 0).
 		Run(context.Background(), "g", 2)
 
-	_, _, cmds := subjEvents(feed, 200)
+	_, _, _, cmds := subjEvents(feed, 200)
 	if len(cmds) != 1 {
 		t.Fatalf("command events = %d, want 1", len(cmds))
 	}
@@ -173,5 +184,38 @@ func TestBrainSeesOnlyItsOwnTurns(t *testing.T) {
 	// 2nd Decide's history is exactly the brain's own first turn.
 	if len(rec.histories) < 2 || len(rec.histories[1]) != 1 || rec.histories[1][0].Output != "a" {
 		t.Errorf("history is not the brain's own turns only: %+v", rec.histories)
+	}
+}
+
+// execProbeShell publishes a marker to the bus DURING Run, so we can assert the
+// "started" marker is published before exec runs.
+type execProbeShell struct{ bus *events.Bus }
+
+func (s execProbeShell) Run(_ context.Context, _ string) (sandbox.ExecResult, error) {
+	s.bus.Publish(events.New(events.KindTraffic, "box", "exec-probe"))
+	return sandbox.ExecResult{Output: []byte("ok"), ExitCode: 0}, nil
+}
+func (execProbeShell) Close() error { return nil }
+
+func TestAutopilotPublishesStartedBeforeExec(t *testing.T) {
+	bus := events.NewBus(32)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+	NewAutopilot(&fixedBrain{cmds: []string{"nslookup pastebin.com"}}, execProbeShell{bus: bus}, bus, quietLog(), 0).
+		Run(context.Background(), "g", 2)
+
+	var order []string
+	for _, e := range drain(feed, 200) {
+		switch {
+		case e.Kind == events.KindSubject && e.Detail == cmdStartedDetail:
+			order = append(order, "started")
+		case e.Kind == events.KindTraffic && e.Action == "exec-probe":
+			order = append(order, "exec")
+		case e.Kind == events.KindSubject && e.Action != "goal" && e.Action != "stop":
+			order = append(order, "result")
+		}
+	}
+	if strings.Join(order, " ") != "started exec result" {
+		t.Errorf("event order = %v, want [started exec result] (marker must precede exec)", order)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/miki-przygoda/veil/internal/events"
+	"github.com/miki-przygoda/veil/internal/sandbox"
 )
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -37,13 +38,22 @@ func TestSessionRunPublishesSanitisedTranscript(t *testing.T) {
 
 	evs := drain(feed, 200)
 	var subj []events.Event
+	started := 0
 	for _, e := range evs {
-		if e.Kind == events.KindSubject {
-			subj = append(subj, e)
+		if e.Kind != events.KindSubject {
+			continue
 		}
+		if e.Detail == cmdStartedDetail {
+			started++
+			continue
+		}
+		subj = append(subj, e)
+	}
+	if started != 2 {
+		t.Errorf("started markers = %d, want 2 (one per command, pre-exec)", started)
 	}
 	if len(subj) != 2 {
-		t.Fatalf("KindSubject events = %d, want 2", len(subj))
+		t.Fatalf("KindSubject result events = %d, want 2", len(subj))
 	}
 	// command becomes the Action; output is sanitised in Detail.
 	if subj[0].Action != "whoami" {
@@ -81,9 +91,13 @@ func TestSessionRunSanitisesHostileCommand(t *testing.T) {
 
 	var subj []events.Event
 	for _, e := range drain(feed, 200) {
-		if e.Kind == events.KindSubject {
-			subj = append(subj, e)
+		if e.Kind != events.KindSubject {
+			continue
 		}
+		if e.Detail == cmdStartedDetail {
+			continue
+		}
+		subj = append(subj, e)
 	}
 	if len(subj) != 1 {
 		t.Fatalf("KindSubject events = %d, want 1", len(subj))
@@ -102,10 +116,19 @@ func TestSessionRunPublishesOnExecError(t *testing.T) {
 	NewSession(fx, bus, quietLog(), 0).Run(context.Background(), []string{"badcmd"})
 
 	var subj []events.Event
+	startedCount := 0
 	for _, e := range drain(feed, 200) {
-		if e.Kind == events.KindSubject {
-			subj = append(subj, e)
+		if e.Kind != events.KindSubject {
+			continue
 		}
+		if e.Detail == cmdStartedDetail {
+			startedCount++
+			continue
+		}
+		subj = append(subj, e)
+	}
+	if startedCount != 1 {
+		t.Errorf("started marker must be published before exec even on exec error; got %d", startedCount)
 	}
 	if len(subj) != 1 {
 		t.Fatalf("KindSubject events = %d, want 1 (an exec error is not a dropped command)", len(subj))
@@ -115,5 +138,36 @@ func TestSessionRunPublishesOnExecError(t *testing.T) {
 	}
 	if strings.Contains(subj[0].Detail, "<x>") {
 		t.Errorf("error text not sanitised: %q", subj[0].Detail)
+	}
+}
+
+// execProbeExecer publishes a marker to the bus DURING Exec, letting us assert the
+// "started" transcript marker is published before exec runs.
+type execProbeExecer struct{ bus *events.Bus }
+
+func (e execProbeExecer) Exec(_ context.Context, _ []string) (sandbox.ExecResult, error) {
+	e.bus.Publish(events.New(events.KindTraffic, "box", "exec-probe"))
+	return sandbox.ExecResult{Output: []byte("ok")}, nil
+}
+
+func TestSessionPublishesStartedBeforeExec(t *testing.T) {
+	bus := events.NewBus(16)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+	NewSession(execProbeExecer{bus: bus}, bus, quietLog(), 0).Run(context.Background(), []string{"nslookup pastebin.com"})
+
+	var order []string
+	for _, e := range drain(feed, 200) {
+		switch {
+		case e.Kind == events.KindSubject && e.Detail == cmdStartedDetail:
+			order = append(order, "started")
+		case e.Kind == events.KindTraffic && e.Action == "exec-probe":
+			order = append(order, "exec")
+		case e.Kind == events.KindSubject:
+			order = append(order, "result")
+		}
+	}
+	if strings.Join(order, " ") != "started exec result" {
+		t.Errorf("event order = %v, want [started exec result] (marker must precede exec)", order)
 	}
 }
