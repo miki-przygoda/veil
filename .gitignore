@@ -33,3 +33,4 @@ go.work.sum
 
 /docs/superpowers
 /docs/VALIDATION.md
+.DS_Store
