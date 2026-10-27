@@ -3,11 +3,16 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
 	"time"
 )
+
+// maxSMTPLine is RFC 5321's text-line limit (4.5.3.1.6), CRLF included; it bounds
+// command and DATA lines alike.
+const maxSMTPLine = 1000
 
 // serveSMTP greets and answers a minimal command set — enough that a subject's
 // HELO/EHLO handshake gets real responses, not a dead socket.
@@ -20,7 +25,13 @@ func serveSMTP(ctx context.Context, ln net.Listener, hostname string) error {
 		r := bufio.NewReader(c)
 		inData := false
 		for {
-			line, err := r.ReadString('\n')
+			line, err := readLine(r, maxSMTPLine)
+			if errors.Is(err, errLineTooLong) {
+				w.WriteString("500 Line too long\r\n")
+				_ = w.Flush()
+				hangUp(c)
+				return
+			}
 			if err != nil {
 				return
 			}

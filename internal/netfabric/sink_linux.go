@@ -17,15 +17,14 @@ import (
 
 var ErrHoneypotUnsupported = errors.New("transparent honeypot unsupported")
 
-const (
-	honeypotChain = "VEIL-HONEYPOT"
-	soOriginalDst = 80 // SO_ORIGINAL_DST (Linux netfilter)
-)
+const soOriginalDst = 80 // SO_ORIGINAL_DST (Linux netfilter)
 
 // InstallHoneypot binds a listener on the gateway and installs a scoped,
-// reconciled iptables REDIRECT so all TCP from the box to the gateway lands on
-// it. Returns a teardown that removes the chain + closes the listener. [H2]
-func InstallHoneypot(bridge, subnet, gateway string, bus *events.Bus, log *slog.Logger) (func(), error) {
+// reconciled iptables REDIRECT so all TCP from the box to the gateway lands on it,
+// except tcp/53 when exemptDNS (the resolver serves DNS-over-TCP there); if the
+// resolver's TCP listener is down, tcp/53 stays redirected. Returns a teardown
+// that removes the chain + closes the listener. [H2]
+func InstallHoneypot(bridge, subnet, gateway string, exemptDNS bool, bus *events.Bus, log *slog.Logger) (func(), error) {
 	if net.ParseIP(gateway) == nil {
 		return nil, fmt.Errorf("%w: bad gateway %q", ErrHoneypotUnsupported, gateway)
 	}
@@ -38,11 +37,11 @@ func InstallHoneypot(bridge, subnet, gateway string, bus *events.Bus, log *slog.
 	}
 	_, port, _ := net.SplitHostPort(ln.Addr().String())
 
-	// Reconcile: clear any chain a prior crashed run leaked, then install fresh.
-	removeRules(bridge, subnet, gateway)
-	if err := installRules(bridge, subnet, gateway, port); err != nil {
+	// Reconcile: clear every jump + chain a prior crashed run leaked (even for
+	// a since-recreated subnet), then install fresh.
+	if err := reconcileHoneypotRules(ipt, bridge, subnet, gateway, port, exemptDNS); err != nil {
 		_ = ln.Close()
-		removeRules(bridge, subnet, gateway)
+		removeHoneypotRules(ipt)
 		return nil, fmt.Errorf("%w: iptables: %v", ErrHoneypotUnsupported, err)
 	}
 
@@ -53,38 +52,18 @@ func InstallHoneypot(bridge, subnet, gateway string, bus *events.Bus, log *slog.
 	return func() {
 		cancel()
 		_ = ln.Close()
-		removeRules(bridge, subnet, gateway)
+		removeHoneypotRules(ipt)
 	}, nil
 }
 
-func ipt(args ...string) error {
-	out, err := exec.Command("iptables", args...).CombinedOutput() // arg-slice, no shell
+// ipt is the real iptRunner. It waits (bounded) for the xtables lock; see
+// iptArgv.
+func ipt(args ...string) (string, error) {
+	out, err := exec.Command("iptables", iptArgv(args...)...).CombinedOutput() // arg-slice, no shell
 	if err != nil {
-		return fmt.Errorf("iptables %v: %v: %s", args, err, out)
+		return string(out), fmt.Errorf("iptables %v: %v: %s", args, err, out)
 	}
-	return nil
-}
-
-func installRules(bridge, subnet, gateway, port string) error {
-	if err := ipt("-t", "nat", "-N", honeypotChain); err != nil {
-		return err
-	}
-	if err := ipt("-t", "nat", "-A", honeypotChain,
-		"-i", bridge, "-s", subnet, "-d", gateway, "-p", "tcp",
-		"-j", "REDIRECT", "--to-ports", port); err != nil {
-		return err
-	}
-	return ipt("-t", "nat", "-A", "PREROUTING",
-		"-i", bridge, "-s", subnet, "-d", gateway, "-p", "tcp", "-j", honeypotChain)
-}
-
-// removeRules is idempotent (each step tolerates "not found"): unhook the jump,
-// flush, delete the chain. Used for both reconcile and teardown.
-func removeRules(bridge, subnet, gateway string) {
-	_ = ipt("-t", "nat", "-D", "PREROUTING",
-		"-i", bridge, "-s", subnet, "-d", gateway, "-p", "tcp", "-j", honeypotChain)
-	_ = ipt("-t", "nat", "-F", honeypotChain)
-	_ = ipt("-t", "nat", "-X", honeypotChain)
+	return string(out), nil
 }
 
 // origDst recovers the subject's intended port via SO_ORIGINAL_DST (the pre-

@@ -88,3 +88,59 @@ func TestPacketTapStopsOnCtx(t *testing.T) {
 		t.Fatal("Run did not return on ctx cancel")
 	}
 }
+
+// TestTrafficEventTime: a fact carries the packet's capture time (normalised to
+// UTC), not the time Run dequeues it, so a backlogged egress-attempt can't be
+// stamped after the next command's "started" marker. A zero capture time falls
+// back to now.
+func TestTrafficEventTime(t *testing.T) {
+	captured := time.Date(2026, 10, 26, 12, 0, 0, 123, time.FixedZone("CEST", 2*3600))
+	tests := []struct {
+		name string
+		in   time.Time
+		want func(got time.Time, before, after time.Time) bool
+	}{
+		{"capture time kept as UTC", captured, func(got, _, _ time.Time) bool {
+			return got.Equal(captured) && got.Location() == time.UTC
+		}},
+		{"zero falls back to now", time.Time{}, func(got, before, after time.Time) bool {
+			return !got.Before(before) && !got.After(after) && got.Location() == time.UTC
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := time.Now().UTC()
+			e := trafficEvent(packet{Src: "10.7.0.2", Dst: "1.1.1.1", Protocol: "tcp", Length: 60, Time: tt.in})
+			after := time.Now().UTC()
+			if !tt.want(e.Time, before, after) {
+				t.Errorf("Time = %v (%v), want per %q", e.Time, e.Time.Location(), tt.name)
+			}
+			if e.Kind != events.KindTraffic || e.Source != "10.7.0.2" || e.Dest != "1.1.1.1" ||
+				e.Protocol != "tcp" || e.Action != "capture" || e.Detail != "60 bytes" {
+				t.Errorf("event = %+v, want traffic 10.7.0.2->1.1.1.1 tcp capture 60 bytes", e)
+			}
+		})
+	}
+}
+
+// TestPacketTapUsesCaptureTime: Run publishes the capture time, even when the
+// packet is dequeued long after it was captured.
+func TestPacketTapUsesCaptureTime(t *testing.T) {
+	bus := events.NewBus(4)
+	feed, unsub := bus.Subscribe()
+	defer unsub()
+	captured := time.Now().Add(-time.Minute).UTC()
+	src := &fakeSource{ch: make(chan packet, 1)}
+	src.ch <- packet{Src: "10.7.0.2", Dst: "1.1.1.1", Protocol: "tcp", Length: 60, Time: captured}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = NewPacketTap(src).Run(ctx, bus) }()
+	select {
+	case e := <-feed:
+		if !e.Time.Equal(captured) {
+			t.Errorf("Time = %v, want capture time %v", e.Time, captured)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no event")
+	}
+}

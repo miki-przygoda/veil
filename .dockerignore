@@ -1,0 +1,5 @@
+# Keep VCS data, local agent state and docs out of the image build context.
+.git
+.claude
+docs/superpowers
+*.patch

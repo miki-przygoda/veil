@@ -2,6 +2,7 @@ package subject
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -71,7 +72,7 @@ func subjEvents(feed <-chan events.Event, ms int) (goal, stop, started int, cmds
 			goal++
 		case e.Action == "stop":
 			stop++
-		case e.Detail == cmdStartedDetail:
+		case e.Detail == events.DetailCommandStarted:
 			started++
 		default:
 			cmds = append(cmds, e)
@@ -207,7 +208,7 @@ func TestAutopilotPublishesStartedBeforeExec(t *testing.T) {
 	var order []string
 	for _, e := range drain(feed, 200) {
 		switch {
-		case e.Kind == events.KindSubject && e.Detail == cmdStartedDetail:
+		case e.Kind == events.KindSubject && e.Detail == events.DetailCommandStarted:
 			order = append(order, "started")
 		case e.Kind == events.KindTraffic && e.Action == "exec-probe":
 			order = append(order, "exec")
@@ -217,5 +218,85 @@ func TestAutopilotPublishesStartedBeforeExec(t *testing.T) {
 	}
 	if strings.Join(order, " ") != "started exec result" {
 		t.Errorf("event order = %v, want [started exec result] (marker must precede exec)", order)
+	}
+}
+
+// cancellingBrain cancels the run's ctx mid-Decide and returns the ctx error,
+// as an HTTP brain does when its request is torn down.
+type cancellingBrain struct{ cancel context.CancelFunc }
+
+func (b cancellingBrain) Decide(ctx context.Context, _ string, _ []Turn) (Action, error) {
+	b.cancel()
+	<-ctx.Done()
+	return Action{}, fmt.Errorf("claude: %w", ctx.Err())
+}
+
+// cancellingShell cancels the run's ctx mid-Run and returns the ctx error.
+type cancellingShell struct {
+	cancel context.CancelFunc
+	closed bool
+}
+
+func (s *cancellingShell) Run(ctx context.Context, _ string) (sandbox.ExecResult, error) {
+	s.cancel()
+	<-ctx.Done()
+	return sandbox.ExecResult{}, ctx.Err()
+}
+func (s *cancellingShell) Close() error { s.closed = true; return nil }
+
+func TestAutopilotReportsCancelMidStep(t *testing.T) {
+	tests := []struct {
+		name     string
+		mk       func(cancel context.CancelFunc) (Brain, sandbox.Shell)
+		wantRows int // executed-command result rows
+	}{
+		{
+			name: "cancel during Decide",
+			mk: func(cancel context.CancelFunc) (Brain, sandbox.Shell) {
+				return cancellingBrain{cancel: cancel}, &fakeShell{}
+			},
+		},
+		{
+			name: "cancel during shell.Run",
+			mk: func(cancel context.CancelFunc) (Brain, sandbox.Shell) {
+				return &fixedBrain{cmds: []string{"sleep 100"}}, &cancellingShell{cancel: cancel}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			bus := events.NewBus(16)
+			feed, unsub := bus.Subscribe()
+			defer unsub()
+			brain, sh := tt.mk(cancel)
+
+			NewAutopilot(brain, sh, bus, quietLog(), 0).Run(ctx, "g", 5)
+
+			var stops []string
+			rows := 0
+			for _, e := range drain(feed, 200) {
+				if e.Kind != events.KindSubject {
+					continue
+				}
+				switch {
+				case e.Action == "stop":
+					stops = append(stops, e.Detail)
+				case e.Action == "goal", e.Detail == events.DetailCommandStarted:
+				default:
+					rows++
+					if strings.Contains(e.Detail, "exec error") {
+						t.Errorf("cancel must not publish an exec-error row: %+v", e)
+					}
+				}
+			}
+			if len(stops) != 1 || stops[0] != "cancelled" {
+				t.Errorf("stop reasons = %q, want [cancelled]", stops)
+			}
+			if rows != tt.wantRows {
+				t.Errorf("result rows = %d, want %d", rows, tt.wantRows)
+			}
+		})
 	}
 }

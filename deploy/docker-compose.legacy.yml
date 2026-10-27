@@ -1,0 +1,33 @@
+# Legacy-iptables hosts only (host `iptables --version` says "(legacy)"). Layer
+# it on the main file and build with the matching backend:
+#
+#   IPTABLES_BACKEND=legacy docker compose -f deploy/docker-compose.yml \
+#     -f deploy/docker-compose.legacy.yml --profile images build
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.legacy.yml up -d
+#
+# iptables-legacy rewrites a whole table per call and serialises writers with
+# flock on /run/xtables.lock. The container's own /run is private, so without
+# this mount veild's iptables and dockerd's/the host's would each hold a
+# different lock and could race, one silently dropping the other's rules. veild
+# calls iptables with -w 3, so it queues behind the host's holder (bounded)
+# rather than failing on it.
+#
+# The nft backend (the main file's default) doesn't use the lock (nf_tables
+# commits are atomic in the kernel), so it isn't mounted there: an nft host may
+# have no /run/xtables.lock at all.
+#
+# create_host_path: false makes `up` fail if the host file is missing, instead
+# of Docker creating a directory there; a directory would break every legacy
+# iptables call, the host's included. Create it once with:
+#   sudo touch /run/xtables.lock
+# /run is tmpfs, so the file is gone after a reboot until a legacy iptables
+# call recreates it; dockerd's own iptables setup normally does that before the
+# restart policy brings veild back.
+services:
+  veild:
+    volumes:
+      - type: bind
+        source: /run/xtables.lock
+        target: /run/xtables.lock
+        bind:
+          create_host_path: false

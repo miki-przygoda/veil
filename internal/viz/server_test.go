@@ -1,12 +1,15 @@
 package viz
 
 import (
+	"bufio"
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/miki-przygoda/veil/internal/events"
 )
@@ -55,5 +58,42 @@ func TestReportEndpointAbsentWhenNilProvider(t *testing.T) {
 	// No /report route registered -> falls through to the FileServer catch-all -> 404.
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404 (route not registered)", rec.Code)
+	}
+}
+
+func TestEventsFlushesHeadersOnConnect(t *testing.T) {
+	// A quiet feed (no events, keepalive 15s away) must still deliver headers and
+	// a first byte immediately, so EventSource.onopen fires without waiting.
+	s := quietServer()
+	ts := httptest.NewServer(s.handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/events", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /events on a quiet feed: %v (headers not flushed on connect)", err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("content-type = %q, want text/event-stream", ct)
+	}
+	line, err := bufio.NewReader(resp.Body).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read first line: %v", err)
+	}
+	if !strings.HasPrefix(line, ":") {
+		t.Errorf("first line = %q, want an SSE comment", line)
+	}
+}
+
+func TestHTTPServerTimeouts(t *testing.T) {
+	srv := quietServer().httpServer()
+	if srv.ReadHeaderTimeout <= 0 {
+		t.Error("ReadHeaderTimeout unset: a slow client can hold a connection open forever")
+	}
+	if srv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %v, want 0 (it would cut long-lived SSE streams)", srv.WriteTimeout)
 	}
 }

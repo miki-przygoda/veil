@@ -3,11 +3,16 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
 	"time"
 )
+
+// maxIMAPLine bounds one IMAP command line. RFC 3501 sets no limit; RFC 7162 (3.2.1)
+// asks servers to accept at least 8192 octets, which is plenty for this canned set.
+const maxIMAPLine = 8192
 
 // serveIMAP greets and answers CAPABILITY/LOGIN/LOGOUT with canned tagged
 // responses — enough to look like a real IMAP host under light interaction.
@@ -19,7 +24,14 @@ func serveIMAP(ctx context.Context, ln net.Listener, hostname string) error {
 		_ = w.Flush()
 		r := bufio.NewReader(c)
 		for {
-			line, err := r.ReadString('\n')
+			line, err := readLine(r, maxIMAPLine)
+			if errors.Is(err, errLineTooLong) {
+				w.WriteString("* BAD line too long\r\n")
+				w.WriteString("* BYE closing connection\r\n")
+				_ = w.Flush()
+				hangUp(c)
+				return
+			}
 			if err != nil {
 				return
 			}

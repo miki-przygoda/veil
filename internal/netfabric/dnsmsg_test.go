@@ -99,3 +99,66 @@ func TestReplyRcodeNeverAuthoritativeWhenFalse(t *testing.T) {
 		t.Error("ANCOUNT must be 0 on an rcode reply")
 	}
 }
+
+// withFlags rewrites a query's header flags word (QR/opcode/RD/...).
+func withFlags(q []byte, flags uint16) []byte {
+	out := append([]byte(nil), q...)
+	binary.BigEndian.PutUint16(out[2:4], flags)
+	return out
+}
+
+func TestHeaderFlags(t *testing.T) {
+	// A recursive-resolver persona: RD echoed from the query, RA always set, the
+	// opcode echoed, AA only when the caller claims authority ([H3]).
+	cases := []struct {
+		name   string
+		qflags uint16
+		aa     bool
+		rcode  uint8
+		want   uint16
+	}{
+		{"RD query, non-auth NOERROR", 0x0100, false, rcodeNoError, 0x8180},
+		{"RD query, authoritative", 0x0100, true, rcodeNoError, 0x8580},
+		{"no RD, REFUSED", 0x0000, false, rcodeRefused, 0x8085},
+		{"RD query, NXDOMAIN", 0x0100, false, rcodeNXDomain, 0x8183},
+		{"STATUS opcode echoed, NOTIMP", 0x1100, false, rcodeNotImp, 0x9184},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			q, err := parseQuery(withFlags(encodeQuery(7, "web.veil.local", dnsTypeA), c.qflags))
+			if err != nil {
+				t.Fatalf("parseQuery: %v", err)
+			}
+			h := header(q, c.aa, c.rcode, 0)
+			if got := binary.BigEndian.Uint16(h[2:4]); got != c.want {
+				t.Errorf("flags = %#04x, want %#04x", got, c.want)
+			}
+		})
+	}
+}
+
+func TestParseQueryFlags(t *testing.T) {
+	cases := []struct {
+		name   string
+		flags  uint16
+		qr     bool
+		opcode uint8
+		rd     bool
+	}{
+		{"standard RD query", 0x0100, false, 0, true},
+		{"no RD", 0x0000, false, 0, false},
+		{"response bit set", 0x8100, true, 0, true},
+		{"NOTIFY opcode (4)", 0x2000, false, 4, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			q, err := parseQuery(withFlags(encodeQuery(1, "x.local", dnsTypeA), c.flags))
+			if err != nil {
+				t.Fatalf("parseQuery: %v", err)
+			}
+			if q.qr != c.qr || q.opcode != c.opcode || q.rd != c.rd {
+				t.Errorf("qr=%v opcode=%d rd=%v, want qr=%v opcode=%d rd=%v", q.qr, q.opcode, q.rd, c.qr, c.opcode, c.rd)
+			}
+		})
+	}
+}

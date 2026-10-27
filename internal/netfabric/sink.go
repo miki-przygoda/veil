@@ -13,6 +13,8 @@ import (
 const (
 	sinkMaxConns = 64  // [M6] concurrent connections
 	sinkReadCap  = 512 // [M6] bytes captured per connection
+
+	sinkIOTimeout = 2 * time.Second // one budget from accept, shared by the banner write and the read
 )
 
 // Sink is the transparent honeypot's connection handler. orig returns the
@@ -57,10 +59,12 @@ func (s *Sink) serve(ctx context.Context, ln net.Listener) {
 		if err != nil {
 			return
 		}
+		// Stamp at accept: the read below can outlast the subject's command.
+		accepted := time.Now().UTC()
 		select {
 		case sem <- struct{}{}:
 			s.overloaded.Store(false) // re-arm: we're below cap again
-			go func() { defer func() { <-sem }(); s.handle(conn) }()
+			go func() { defer func() { <-sem }(); s.handle(conn, accepted) }()
 		default:
 			// Over the cap: RST + ONE KindSystem per episode, never per-conn ([M6]).
 			if tc, ok := conn.(*net.TCPConn); ok {
@@ -72,17 +76,25 @@ func (s *Sink) serve(ctx context.Context, ln net.Listener) {
 	}
 }
 
-func (s *Sink) handle(conn net.Conn) {
+// handle captures one connection; accepted is when serve accepted it (the fact time).
+func (s *Sink) handle(conn net.Conn, accepted time.Time) {
 	defer conn.Close()
 	port := s.orig(conn)
-	_ = conn.SetDeadline(time.Now().Add(2 * time.Second)) // bounds BOTH the read and the banner write
+	// One budget measured from accept bounds the whole exchange, so a connection holds a
+	// sinkMaxConns slot for at most sinkIOTimeout ([M6]); the read gets what the banner left.
+	deadline := accepted.Add(sinkIOTimeout)
+	// Banner FIRST: server-speaks-first clients (ssh, nc, smtp) send nothing until they
+	// hear one, so reading first left them silence then EOF.
+	_ = conn.SetWriteDeadline(deadline)
+	_, _ = conn.Write([]byte("220 service ready\r\n")) // best-effort; a failure still yields a fact
+	_ = conn.SetReadDeadline(deadline)
 	buf := make([]byte, sinkReadCap)
 	n, _ := conn.Read(buf) // best-effort; may be 0
-	_, _ = conn.Write([]byte("220 service ready\r\n"))
 
 	// Source is the transport peer ([L7]); payload is subject-controlled -> capped
 	// + sanitised before the bus ([C1]).
 	e := events.New(events.KindTraffic, hostIP(conn.RemoteAddr()), "sink connect")
+	e.Time = accepted
 	e.Dest = s.gateway
 	e.Protocol = "tcp"
 	e.Detail = fmt.Sprintf("port %d %s", port, events.SafeField(string(buf[:n]), 120))

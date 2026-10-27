@@ -41,7 +41,7 @@ func TestSubjectIntegration(t *testing.T) {
 
 	var got []events.Event
 	for _, e := range drain(feed, 500) {
-		if e.Kind == events.KindSubject && e.Detail != cmdStartedDetail {
+		if e.Kind == events.KindSubject && e.Detail != events.DetailCommandStarted {
 			got = append(got, e)
 		}
 	}

@@ -183,7 +183,7 @@ func TestBuildSpecDNS(t *testing.T) {
 func TestHardenedSpecExportedForResidents(t *testing.T) {
 	// A resident-style config: veil-net + world DNS. HardenedSpec must be callable
 	// from outside (exported), name deterministically, inherit the box hardening,
-	// and add NO caps (the Fleet layers on NET_BIND_SERVICE itself).
+	// and add NO caps or sysctls (the Fleet layers on its low-port sysctl itself).
 	spec := Config{Image: "veil-resident:dev", Network: "veil-net", DNS: []string{"172.20.0.1"}}.
 		HardenedSpec("resident-web.veil.local")
 	if spec.Name != "veil-resident-web.veil.local" {
@@ -197,6 +197,9 @@ func TestHardenedSpecExportedForResidents(t *testing.T) {
 	}
 	if len(spec.HostConfig.CapAdd) != 0 {
 		t.Errorf("HardenedSpec must not add caps, got %v", spec.HostConfig.CapAdd)
+	}
+	if len(spec.HostConfig.Sysctls) != 0 {
+		t.Errorf("HardenedSpec must not set sysctls, got %v", spec.HostConfig.Sysctls)
 	}
 }
 

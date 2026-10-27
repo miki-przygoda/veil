@@ -20,6 +20,11 @@ import (
 // ErrEngineUnavailable means the Docker daemon could not be reached.
 var ErrEngineUnavailable = errors.New("docker engine unavailable")
 
+// ErrExecUnfinished means ExecInspect found the exec still running, or with no
+// exit code recorded, so there is no real exit status to report. ExecInspect
+// returns -1 alongside it; it is never reported as a clean exit 0.
+var ErrExecUnfinished = errors.New("docker exec has not finished")
+
 // engineError wraps a non-2xx Docker API response.
 type engineError struct {
 	status  int
@@ -48,7 +53,7 @@ type HostConfig struct {
 	ReadonlyRootfs bool              `json:"ReadonlyRootfs"`
 	Tmpfs          map[string]string `json:"Tmpfs,omitempty"`
 	CapDrop        []string          `json:"CapDrop,omitempty"`
-	CapAdd         []string          `json:"CapAdd,omitempty"` // residents add NET_BIND_SERVICE
+	CapAdd         []string          `json:"CapAdd,omitempty"` // unused by Veil: caps never reach a non-root, no-new-privileges process
 	SecurityOpt    []string          `json:"SecurityOpt,omitempty"`
 	PidsLimit      int64             `json:"PidsLimit,omitempty"`
 	Memory         int64             `json:"Memory,omitempty"`
@@ -59,7 +64,7 @@ type HostConfig struct {
 	UsernsMode     string            `json:"UsernsMode,omitempty"`
 	CpuPeriod      int64             `json:"CpuPeriod,omitempty"`
 	CpuQuota       int64             `json:"CpuQuota,omitempty"`
-	Sysctls        map[string]string `json:"Sysctls,omitempty"` // reserved hook; HardenedSpec does not set it yet
+	Sysctls        map[string]string `json:"Sysctls,omitempty"` // netns-scoped only; residents set ip_unprivileged_port_start, the box none
 }
 
 // NetworkingConfig pins per-network endpoint settings at create time (e.g. a
@@ -205,6 +210,31 @@ func (c *Client) Ping(ctx context.Context) error {
 	return nil
 }
 
+// EngineVersion returns the daemon's engine version string (e.g. "29.1.3") from
+// GET /version. Like Ping it is unversioned: an engine older than the pinned API
+// would reject a /v1.44/ prefix, and old engines are what callers need to spot.
+func (c *Client) EngineVersion(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.root+"/version", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.httpc.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrEngineUnavailable, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", decodeError(resp)
+	}
+	var out struct {
+		Version string `json:"Version"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&out); err != nil {
+		return "", fmt.Errorf("decode version: %w", err)
+	}
+	return out.Version, nil
+}
+
 // ImageExists reports whether the image ref is present locally.
 func (c *Client) ImageExists(ctx context.Context, ref string) (bool, error) {
 	resp, err := c.do(ctx, http.MethodGet, "/images/"+ref+"/json", nil, nil)
@@ -337,9 +367,13 @@ func (c *Client) ExecCreate(ctx context.Context, id string, cmd []string) (strin
 	return decodeID(resp)
 }
 
-// ExecStart starts a created exec and returns its merged output, read to EOF but
-// bounded by execOutputCap. For an output-only (non-interactive) exec, reading
-// the response body to EOF is sufficient — no stream hijack needed.
+// ExecStart starts a created exec and returns its merged output. It retains at
+// most execOutputCap bytes but reads the stream to EOF, discarding the excess:
+// closing early would leave the TTY process blocked writing inside the box (a
+// PID held against PidsLimit) and the exec unfinished. The drain is bounded in
+// time by ctx and the client timeout; if it is cut short the command did not
+// finish, and an error is returned. For an output-only (non-interactive) exec,
+// reading the response body to EOF is sufficient — no stream hijack needed.
 func (c *Client) ExecStart(ctx context.Context, execID string) ([]byte, error) {
 	body := map[string]any{"Detach": false, "Tty": true}
 	resp, err := c.do(ctx, http.MethodPost, "/exec/"+execID+"/start", nil, body)
@@ -350,11 +384,20 @@ func (c *Client) ExecStart(ctx context.Context, execID string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, decodeError(resp)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, execOutputCap))
+	out, err := io.ReadAll(io.LimitReader(resp.Body, execOutputCap))
+	if err != nil {
+		return nil, err
+	}
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		return nil, fmt.Errorf("exec output drain: %w", err)
+	}
+	return out, nil
 }
 
 // ExecInspect returns the exit code of a finished exec (the start stream carries
-// no status, so the code is fetched separately once the process has exited).
+// no status, so the code is fetched separately once the process has exited). If
+// the exec is still running or Docker recorded no exit code (null/absent), it
+// returns -1 and an error wrapping ErrExecUnfinished, never a misleading 0.
 func (c *Client) ExecInspect(ctx context.Context, execID string) (int, error) {
 	resp, err := c.do(ctx, http.MethodGet, "/exec/"+execID+"/json", nil, nil)
 	if err != nil {
@@ -365,12 +408,19 @@ func (c *Client) ExecInspect(ctx context.Context, execID string) (int, error) {
 		return 0, decodeError(resp)
 	}
 	var out struct {
-		ExitCode int `json:"ExitCode"`
+		Running  *bool `json:"Running"`
+		ExitCode *int  `json:"ExitCode"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return 0, err
 	}
-	return out.ExitCode, nil
+	if out.Running != nil && *out.Running {
+		return -1, fmt.Errorf("%w: still running", ErrExecUnfinished)
+	}
+	if out.ExitCode == nil {
+		return -1, fmt.Errorf("%w: no exit code", ErrExecUnfinished)
+	}
+	return *out.ExitCode, nil
 }
 
 // NetworkSpec is the body for POST /networks/create.
@@ -467,12 +517,18 @@ type hijackedConn struct {
 
 func (h *hijackedConn) Read(p []byte) (int, error) { return h.r.Read(p) }
 
+// attachHandshakeTimeout bounds ExecAttach's upgrade handshake when ctx carries
+// no deadline, so a stalled daemon cannot wedge it. A var so tests can shorten it.
+var attachHandshakeTimeout = 30 * time.Second
+
 // ExecAttach creates an interactive exec (stdin+stdout+stderr, no TTY) running
 // cmd, starts it on a hijacked connection, and returns the raw duplex stream.
 // The caller writes stdin to it and reads Docker's multiplexed stdout/stderr
 // frames with DemuxFrame. Closing the returned conn ends the exec. Tty:false
 // (framed, no echo, no prompt) is deliberate — it makes programmatic framing
-// reliable.
+// reliable. ctx bounds the whole handshake (dial, request write, status and
+// header reads; attachHandshakeTimeout applies if ctx has no deadline) but not
+// the returned stream, whose deadline is cleared before it is handed back.
 func (c *Client) ExecAttach(ctx context.Context, id string, cmd []string) (net.Conn, error) {
 	create := map[string]any{
 		"AttachStdin":  true,
@@ -499,6 +555,35 @@ func (c *Client) ExecAttach(ctx context.Context, id string, cmd []string) (net.C
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrEngineUnavailable, err)
 	}
+	// The dial honours ctx; the raw handshake below does not on its own, so
+	// bound it with a conn deadline and make ctx cancellation expire it early.
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(attachHandshakeTimeout)
+	}
+	_ = conn.SetDeadline(deadline)
+	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
+	br, err := attachHandshake(conn, execID)
+	if !stop() && err == nil {
+		// ctx ended during the handshake: the cancel callback has run (or is
+		// running) and poisoned the deadline, so the stream is unusable.
+		err = fmt.Errorf("exec attach: %w", ctx.Err())
+	}
+	if err != nil {
+		conn.Close()
+		if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(err, ctxErr) {
+			err = fmt.Errorf("%w (%v)", err, ctxErr)
+		}
+		return nil, err
+	}
+	_ = conn.SetDeadline(time.Time{}) // the hijacked stream is long-lived
+	return &hijackedConn{Conn: conn, r: br}, nil
+}
+
+// attachHandshake sends the upgrading exec start on conn and consumes the
+// response status and headers. The returned reader holds the start of the raw
+// multiplexed stream. The caller owns conn and closes it on error.
+func attachHandshake(conn net.Conn, execID string) (*bufio.Reader, error) {
 	reqBody := `{"Detach":false,"Tty":false}`
 	req := "POST /" + dockerAPIVersion + "/exec/" + execID + "/start HTTP/1.1\r\n" +
 		"Host: docker\r\n" +
@@ -508,38 +593,33 @@ func (c *Client) ExecAttach(ctx context.Context, id string, cmd []string) (net.C
 		"Content-Length: " + strconv.Itoa(len(reqBody)) + "\r\n\r\n" +
 		reqBody
 	if _, err := conn.Write([]byte(req)); err != nil {
-		conn.Close()
 		return nil, fmt.Errorf("%w: %v", ErrEngineUnavailable, err)
 	}
 
 	br := bufio.NewReader(conn)
 	statusLine, err := br.ReadString('\n')
 	if err != nil {
-		conn.Close()
 		return nil, fmt.Errorf("%w: exec attach read status: %v", ErrEngineUnavailable, err)
 	}
 	parts := strings.SplitN(strings.TrimSpace(statusLine), " ", 3)
 	if len(parts) < 2 {
-		conn.Close()
 		return nil, fmt.Errorf("exec attach: bad status line %q", statusLine)
 	}
 	code, _ := strconv.Atoi(parts[1])
 	if code != http.StatusSwitchingProtocols && code != http.StatusOK {
-		conn.Close()
 		return nil, &engineError{status: code, message: "exec start"}
 	}
 	// Consume headers up to the blank line; the rest of br is the raw stream.
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
-			conn.Close()
 			return nil, fmt.Errorf("%w: exec attach read headers: %v", ErrEngineUnavailable, err)
 		}
 		if line == "\r\n" || line == "\n" {
 			break
 		}
 	}
-	return &hijackedConn{Conn: conn, r: br}, nil
+	return br, nil
 }
 
 // DemuxFrame reads one Docker multiplexed stream frame from r and returns its
