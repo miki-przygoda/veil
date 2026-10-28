@@ -10,16 +10,15 @@ import (
 	"github.com/miki-przygoda/veil/internal/sandbox"
 )
 
-// cmdStartedDetail marks the pre-exec "command started" transcript row, distinguishing it
-// from the post-exec result row. Publishing it BEFORE exec means the escape scorer observes
-// the command before any escape it triggers (deterministic FIFO ordering on the bus), so the
-// escape is attributed to the command that caused it.
-const cmdStartedDetail = "started"
-
-// commandStarted builds the pre-exec transcript marker for one command line.
+// commandStarted builds the pre-exec transcript marker for one command line, tagged
+// events.DetailCommandStarted to distinguish it from the post-exec result row. The row is
+// stamped BEFORE exec, so its Time is no later than any fact the command causes; the escape
+// scorer attributes each escape to the latest command started at or before the escape's
+// fact time (see scoring.Attribution). Bus arrival order is not relied on: the
+// classifier's escape can arrive after the next command's marker.
 func commandStarted(line string) events.Event {
 	e := events.New(events.KindSubject, "subject", events.SafeField(line, 120))
-	e.Detail = cmdStartedDetail
+	e.Detail = events.DetailCommandStarted
 	return e
 }
 

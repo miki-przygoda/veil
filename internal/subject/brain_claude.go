@@ -92,6 +92,12 @@ func (b *claudeBrain) Decide(ctx context.Context, goal string, history []Turn) (
 	if out.StopReason == "refusal" {
 		return Action{Stop: true, Reason: "model declined (refusal)"}, nil
 	}
+	// A reply cut off at the token cap is not an answer: its text is empty (the
+	// budget went on thinking) or a truncated command. Error so the run ends with
+	// a clear reason instead of executing a fragment.
+	if out.StopReason == "max_tokens" {
+		return Action{}, fmt.Errorf("claude: reply truncated (stop_reason max_tokens, budget %d)", claudeMaxTokens)
+	}
 	var text string
 	for _, c := range out.Content { // only "text" blocks; thinking blocks are skipped
 		if c.Type == "text" {
@@ -102,19 +108,29 @@ func (b *claudeBrain) Decide(ctx context.Context, goal string, history []Turn) (
 }
 
 // parseAction turns the model's reply into an Action: the first non-empty line
-// is the command (STOP ends the run). Strips markdown backticks defensively.
+// that is not a markdown fence is the command. Any line starting with ``` is a
+// fence (with or without a language tag) and is skipped; one surrounding pair of
+// inline backticks is stripped. A one-line ```cmd``` wrap yields its inner text.
+// The run stops when the line's first word is STOP (case-insensitive, trailing
+// punctuation such as "STOP:" or "STOP." tolerated); the rest of the line is the reason.
 func parseAction(text string) Action {
 	for _, l := range strings.Split(text, "\n") {
 		l = strings.TrimSpace(l)
-		if l == "" {
-			continue
+		if strings.HasPrefix(l, "```") {
+			if len(l) < 6 || !strings.HasSuffix(l, "```") {
+				continue // fence line (```, ```bash, …) — never a command
+			}
+			// One-line ```cmd``` wrap: the inner text, verbatim, is the command.
+			l = strings.TrimSpace(l[3 : len(l)-3])
 		}
-		if strings.HasPrefix(l, claudeStopToken) {
-			return Action{Stop: true, Reason: strings.TrimSpace(strings.TrimPrefix(l, claudeStopToken))}
+		if len(l) >= 2 && l[0] == '`' && l[len(l)-1] == '`' {
+			l = strings.TrimSpace(l[1 : len(l)-1])
 		}
-		l = strings.Trim(l, "`")
-		if l == "" {
-			continue // a bare fence line (``` etc.) — keep scanning for the real command
+		if strings.Trim(l, "`") == "" {
+			continue // empty, or stray backticks only — keep scanning for the real command
+		}
+		if tok := strings.Fields(l)[0]; strings.EqualFold(strings.TrimRight(tok, ".:!,;"), claudeStopToken) {
+			return Action{Stop: true, Reason: strings.TrimSpace(l[len(tok):])}
 		}
 		return Action{Command: l}
 	}

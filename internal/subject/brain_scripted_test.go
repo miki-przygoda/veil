@@ -29,7 +29,7 @@ func TestScriptedBrainWalksVectorsThenStops(t *testing.T) {
 	if act, _ := b.Decide(context.Background(), "g", make([]Turn, len(scriptedPlan))); !act.Stop {
 		t.Error("scripted brain must Stop after the plan is exhausted")
 	}
-	// The plan exercises all three escape vectors + proves persistence.
+	// The plan probes outward by name and by IP + proves persistence.
 	joined := strings.Join(got, " ")
 	for _, want := range []string{"nslookup", "169.254.169.254", "pwd"} {
 		if !strings.Contains(joined, want) {

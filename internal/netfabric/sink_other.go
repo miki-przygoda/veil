@@ -14,6 +14,6 @@ import (
 // capture is unavailable.
 var ErrHoneypotUnsupported = errors.New("transparent honeypot unsupported on this platform")
 
-func InstallHoneypot(bridge, subnet, gateway string, bus *events.Bus, log *slog.Logger) (func(), error) {
+func InstallHoneypot(bridge, subnet, gateway string, exemptDNS bool, bus *events.Bus, log *slog.Logger) (func(), error) {
 	return nil, ErrHoneypotUnsupported
 }

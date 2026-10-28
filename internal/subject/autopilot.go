@@ -48,6 +48,9 @@ func (a *Autopilot) loop(ctx context.Context, goal string, maxSteps int) string 
 		}
 		act, err := a.brain.Decide(ctx, goal, history)
 		if err != nil {
+			if ctx.Err() != nil {
+				return "cancelled" // the brain failed because the run was torn down
+			}
 			return "brain error: " + err.Error()
 		}
 		if act.Stop {
@@ -59,6 +62,9 @@ func (a *Autopilot) loop(ctx context.Context, goal string, maxSteps int) string 
 
 		a.bus.Publish(commandStarted(act.Command))
 		res, rerr := a.shell.Run(ctx, act.Command)
+		if rerr != nil && ctx.Err() != nil {
+			return "cancelled" // torn down mid-command: no misleading exec-error row
+		}
 		e := events.New(events.KindSubject, "subject", events.SafeField(act.Command, 120))
 		if rerr != nil {
 			e.Detail = "exec error: " + events.SafeField(rerr.Error(), 120)

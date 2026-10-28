@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDockerClientHappyPaths(t *testing.T) {
@@ -275,5 +276,242 @@ func TestDemuxFrameRejectsOversizeFrame(t *testing.T) {
 	hdr := []byte{1, 0, 0, 0, 0xff, 0xff, 0xff, 0xff}
 	if _, _, err := DemuxFrame(bytes.NewReader(hdr)); err == nil {
 		t.Error("DemuxFrame must reject a frame whose declared length exceeds maxFrameSize")
+	}
+}
+
+// Past the cap, ExecStart must keep draining the stream to EOF (discarding the
+// excess) rather than closing it: closing early leaves the TTY process blocked
+// writing inside the box, holding a PID against PidsLimit.
+func TestExecStartDrainsPastCap(t *testing.T) {
+	vp := "/" + dockerAPIVersion
+	const total = 4 << 20 // far more than any socket buffer can absorb
+	wrote := make(chan error, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc(vp+"/exec/flood/start", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		chunk := bytes.Repeat([]byte("A"), 32<<10)
+		var err error
+		for n := 0; n < total && err == nil; n += len(chunk) {
+			_, err = w.Write(chunk)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+		wrote <- err
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	cli := newClientWithHTTP(srv.Client(), srv.URL)
+
+	out, err := cli.ExecStart(context.Background(), "flood")
+	if err != nil || len(out) != execOutputCap {
+		t.Fatalf("ExecStart: got %d bytes err=%v, want %d", len(out), err, execOutputCap)
+	}
+	select {
+	case werr := <-wrote:
+		if werr != nil {
+			t.Errorf("server write failed (stream closed before EOF, not drained): %v", werr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server never finished writing: ExecStart did not drain the stream")
+	}
+}
+
+// ExecInspect must not report a still-running exec, or one whose ExitCode is
+// null/absent, as a clean exit 0.
+func TestExecInspectUnfinished(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		wantCode int
+		wantErr  bool
+	}{
+		{"finished zero", `{"ExitCode":0,"Running":false}`, 0, false},
+		{"finished nonzero", `{"ExitCode":7,"Running":false}`, 7, false},
+		{"still running", `{"ExitCode":0,"Running":true}`, -1, true},
+		{"null exit code", `{"ExitCode":null,"Running":false}`, -1, true},
+		{"absent exit code", `{"Running":false}`, -1, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vp := "/" + dockerAPIVersion
+			mux := http.NewServeMux()
+			mux.HandleFunc(vp+"/exec/e/json", func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+			cli := newClientWithHTTP(srv.Client(), srv.URL)
+
+			code, err := cli.ExecInspect(context.Background(), "e")
+			if code != tc.wantCode {
+				t.Errorf("code = %d, want %d", code, tc.wantCode)
+			}
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantErr && !errors.Is(err, ErrExecUnfinished) {
+				t.Errorf("err = %v, want ErrExecUnfinished", err)
+			}
+		})
+	}
+}
+
+// A daemon that accepts the exec start but never answers the upgrade must not
+// wedge ExecAttach: a ctx deadline, a ctx cancel, or (with neither) the default
+// handshake timeout each unblock it.
+func TestExecAttachHandshakeStall(t *testing.T) {
+	cases := []struct {
+		name string
+		ctx  func() (context.Context, context.CancelFunc)
+	}{
+		{"ctx deadline", func() (context.Context, context.CancelFunc) {
+			return context.WithTimeout(context.Background(), 200*time.Millisecond)
+		}},
+		{"ctx cancel", func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(context.Background())
+			time.AfterFunc(200*time.Millisecond, cancel)
+			return ctx, cancel
+		}},
+		{"default timeout", func() (context.Context, context.CancelFunc) {
+			return context.Background(), func() {}
+		}},
+	}
+	old := attachHandshakeTimeout
+	attachHandshakeTimeout = 300 * time.Millisecond
+	defer func() { attachHandshakeTimeout = old }()
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vp := "/" + dockerAPIVersion
+			mux := http.NewServeMux()
+			mux.HandleFunc(vp+"/containers/cid/exec", func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"Id":"exec-s"}`))
+			})
+			mux.HandleFunc(vp+"/exec/exec-s/start", func(w http.ResponseWriter, _ *http.Request) {
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Errorf("hijack: %v", err)
+					return
+				}
+				defer conn.Close()
+				_, _ = conn.Read(make([]byte, 1)) // stall until the client hangs up
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+			cli := newClientWithHTTP(srv.Client(), srv.URL)
+
+			ctx, cancel := tc.ctx()
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				conn, err := cli.ExecAttach(ctx, "cid", []string{"/bin/sh"})
+				if conn != nil {
+					conn.Close()
+				}
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("ExecAttach against a stalled daemon must error")
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("ExecAttach wedged on a stalled handshake")
+			}
+		})
+	}
+}
+
+// The handshake deadline must be cleared on success: the hijacked stream is
+// long-lived and must keep working after the ctx deadline has passed.
+func TestExecAttachClearsDeadline(t *testing.T) {
+	vp := "/" + dockerAPIVersion
+	mux := http.NewServeMux()
+	mux.HandleFunc(vp+"/containers/cid/exec", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"Id":"exec-d"}`))
+	})
+	mux.HandleFunc(vp+"/exec/exec-d/start", func(w http.ResponseWriter, _ *http.Request) {
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		buf.WriteString("HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+		_ = buf.Flush()
+		time.Sleep(400 * time.Millisecond) // well past the client's ctx deadline
+		payload := "late\n"
+		buf.Write([]byte{1, 0, 0, 0, 0, 0, 0, byte(len(payload))})
+		buf.WriteString(payload)
+		_ = buf.Flush()
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	cli := newClientWithHTTP(srv.Client(), srv.URL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	conn, err := cli.ExecAttach(ctx, "cid", []string{"/bin/sh"})
+	if err != nil {
+		t.Fatalf("ExecAttach: %v", err)
+	}
+	defer conn.Close()
+	_, payload, err := DemuxFrame(conn)
+	if err != nil || string(payload) != "late\n" {
+		t.Fatalf("read after ctx deadline: payload=%q err=%v (handshake deadline not cleared?)", payload, err)
+	}
+}
+
+// TestEngineVersion: GET /version is queried UNVERSIONED (an engine older than
+// the pinned API would reject a /v1.44/ prefix — exactly the engines the caller
+// needs to detect), returns the engine's Version string, and surfaces non-200s.
+func TestEngineVersion(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  int
+		body    string
+		want    string
+		wantErr bool
+	}{
+		{"ok", http.StatusOK, `{"Version":"29.1.3","ApiVersion":"1.52"}`, "29.1.3", false},
+		{"old engine", http.StatusOK, `{"Version":"24.0.7","ApiVersion":"1.43"}`, "24.0.7", false},
+		{"server error", http.StatusInternalServerError, `{"message":"boom"}`, "", true},
+		{"bad json", http.StatusOK, `not json`, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("method = %s, want GET", r.Method)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+			cli := newClientWithHTTP(srv.Client(), srv.URL)
+			got, err := cli.EngineVersion(context.Background())
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if got != tc.want {
+				t.Errorf("version = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEngineVersionUnavailable(t *testing.T) {
+	cli, err := New("unix:///nonexistent/veil-test.sock")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := cli.EngineVersion(context.Background()); !errors.Is(err, ErrEngineUnavailable) {
+		t.Fatalf("EngineVersion err = %v, want ErrEngineUnavailable", err)
 	}
 }

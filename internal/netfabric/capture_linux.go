@@ -61,6 +61,7 @@ func (s *afpacketSource) loop() {
 
 func decode(pkt gopacket.Packet) packet {
 	p := packet{Protocol: "eth", Length: len(pkt.Data())}
+	p.Time = pkt.Metadata().Timestamp // kernel capture time; trafficEvent normalises to UTC
 	if n := pkt.NetworkLayer(); n != nil {
 		f := n.NetworkFlow()
 		p.Src, p.Dst = f.Src().String(), f.Dst().String()

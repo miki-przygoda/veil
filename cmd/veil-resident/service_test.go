@@ -3,7 +3,10 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
+	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -60,3 +63,45 @@ func TestBuildServices(t *testing.T) {
 		t.Error("unknown proto must error")
 	}
 }
+
+func TestReadLine(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		max     int
+		bufSize int
+		stall   bool // further reads after in fail with errStalled (a live conn that stops sending)
+		want    string
+		wantErr error
+	}{
+		{"short line", "hi\r\nrest", 10, 16, false, "hi\r\n", nil},
+		{"exactly max", "abcd\r\n", 6, 16, false, "abcd\r\n", nil},
+		{"one over max", "abcde\r\n", 6, 16, false, "", errLineTooLong},
+		{"no newline, long stream", strings.Repeat("x", 1000), 100, 16, false, "", errLineTooLong},
+		{"spans buffer fills", strings.Repeat("y", 40) + "\n", 64, 16, false, strings.Repeat("y", 40) + "\n", nil},
+		{"eof mid-line", "partial", 64, 16, false, "", io.EOF},
+		// An over-long burst smaller than r's buffer must be rejected without
+		// waiting for more bytes (a stalling subject must not hold the bound off).
+		{"over max in one short burst", strings.Repeat("z", 200), 100, 4096, true, "", errLineTooLong},
+		{"under max then stall", "abc", 100, 4096, true, "", errStalled},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var src io.Reader = strings.NewReader(tc.in)
+			if tc.stall {
+				src = io.MultiReader(src, stallReader{})
+			}
+			got, err := readLine(bufio.NewReaderSize(src, tc.bufSize), tc.max)
+			if !errors.Is(err, tc.wantErr) || got != tc.want {
+				t.Errorf("readLine = %q, %v; want %q, %v", got, err, tc.want, tc.wantErr)
+			}
+		})
+	}
+}
+
+var errStalled = errors.New("stalled")
+
+// stallReader stands in for a conn whose peer stopped sending.
+type stallReader struct{}
+
+func (stallReader) Read([]byte) (int, error) { return 0, errStalled }

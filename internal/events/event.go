@@ -27,6 +27,12 @@ const (
 	KindSubject Kind = "subject"
 )
 
+// DetailCommandStarted is the Detail of the subject harness's pre-exec "command started"
+// KindSubject row, distinguishing it from the post-exec result row of the same command.
+// internal/subject publishes it and internal/scoring attributes escapes by it; it lives
+// here so the two can never drift (a mismatch silently breaks attribution).
+const DetailCommandStarted = "started"
+
 // Event is one observation made from the host side. It is deliberately flat.
 type Event struct {
 	Time     time.Time `json:"time"`

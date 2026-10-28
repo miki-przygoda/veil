@@ -35,6 +35,9 @@ type fakeEngine struct {
 	execCreateErr  error
 	execStartErr   error
 	execInspectErr error
+	// execUnfinishedN makes the first N inspects report the exec unfinished (Docker's
+	// start-stream-EOF-before-exit-recorded race) before falling back to execCode/execInspectErr.
+	execUnfinishedN int
 
 	attach        io.ReadWriteCloser
 	execAttachErr error
@@ -100,6 +103,10 @@ func (f *fakeEngine) execStart(_ context.Context, execID string) ([]byte, error)
 }
 func (f *fakeEngine) execInspect(_ context.Context, execID string) (int, error) {
 	f.calls = append(f.calls, fakeCall{op: "execInspect", id: execID})
+	if f.execUnfinishedN > 0 {
+		f.execUnfinishedN--
+		return -1, fmt.Errorf("%w: still running", docker.ErrExecUnfinished)
+	}
 	return f.execCode, f.execInspectErr
 }
 func (f *fakeEngine) execAttach(_ context.Context, id string, _ []string) (io.ReadWriteCloser, error) {

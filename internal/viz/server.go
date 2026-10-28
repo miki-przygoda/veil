@@ -58,6 +58,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	feed, unsubscribe := s.bus.Subscribe()
 	defer unsubscribe()
 
+	// Flush headers plus a comment right away, so EventSource.onopen fires on a
+	// quiet feed instead of waiting for the first event or keepalive.
+	fmt.Fprint(w, ": ok\n\n")
+	flusher.Flush()
+
 	keepalive := time.NewTicker(15 * time.Second)
 	defer keepalive.Stop()
 
@@ -101,10 +106,17 @@ func (s *Server) handler() http.Handler {
 	})
 }
 
+// httpServer builds the listener's http.Server. ReadHeaderTimeout bounds a slow
+// client's header phase. There is deliberately no WriteTimeout: it would cut
+// every long-lived /events stream.
+func (s *Server) httpServer() *http.Server {
+	return &http.Server{Addr: s.addr, Handler: s.handler(), ReadHeaderTimeout: 10 * time.Second}
+}
+
 // Run starts the HTTP server and blocks until ctx is cancelled, then shuts down
 // gracefully.
 func (s *Server) Run(ctx context.Context) error {
-	srv := &http.Server{Addr: s.addr, Handler: s.handler()}
+	srv := s.httpServer()
 
 	go func() {
 		<-ctx.Done()

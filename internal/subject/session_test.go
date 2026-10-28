@@ -43,7 +43,7 @@ func TestSessionRunPublishesSanitisedTranscript(t *testing.T) {
 		if e.Kind != events.KindSubject {
 			continue
 		}
-		if e.Detail == cmdStartedDetail {
+		if e.Detail == events.DetailCommandStarted {
 			started++
 			continue
 		}
@@ -66,7 +66,7 @@ func TestSessionRunPublishesSanitisedTranscript(t *testing.T) {
 		t.Errorf("Detail missing exit code: %q", subj[0].Detail)
 	}
 	// both commands actually ran, in order
-	if len(fx.got) != 2 || fx.got[1][2] != "id" {
+	if len(fx.got) != 2 || fx.got[1][2] != stdinPrefix+"id" {
 		t.Errorf("commands run = %v", fx.got)
 	}
 }
@@ -94,7 +94,7 @@ func TestSessionRunSanitisesHostileCommand(t *testing.T) {
 		if e.Kind != events.KindSubject {
 			continue
 		}
-		if e.Detail == cmdStartedDetail {
+		if e.Detail == events.DetailCommandStarted {
 			continue
 		}
 		subj = append(subj, e)
@@ -121,7 +121,7 @@ func TestSessionRunPublishesOnExecError(t *testing.T) {
 		if e.Kind != events.KindSubject {
 			continue
 		}
-		if e.Detail == cmdStartedDetail {
+		if e.Detail == events.DetailCommandStarted {
 			startedCount++
 			continue
 		}
@@ -159,7 +159,7 @@ func TestSessionPublishesStartedBeforeExec(t *testing.T) {
 	var order []string
 	for _, e := range drain(feed, 200) {
 		switch {
-		case e.Kind == events.KindSubject && e.Detail == cmdStartedDetail:
+		case e.Kind == events.KindSubject && e.Detail == events.DetailCommandStarted:
 			order = append(order, "started")
 		case e.Kind == events.KindTraffic && e.Action == "exec-probe":
 			order = append(order, "exec")

@@ -43,7 +43,14 @@ func TestResolverEscapeLive(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = NewResolver(world, bus).Serve(ctx, conn) }()
-	go func() { _ = NewClassifier(world).Run(ctx, bus) }()
+	// This query comes from the host, so its source is the gateway, which the
+	// Classifier ignores as the host's own traffic. Its world here leaves Gateway
+	// unset so the host can stand in for the box; Linux drops a loopback-sourced
+	// query to the gateway address (route_localnet), so a different source is not
+	// an option.
+	cw := world
+	cw.Gateway = nil
+	go func() { _ = NewClassifier(cw).Run(ctx, bus) }()
 
 	client, err := net.Dial("udp", gw+":53")
 	if err != nil {

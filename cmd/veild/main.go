@@ -3,8 +3,8 @@
 // It wires the spine together: a sandbox (container-backed by default;
 // -backend=stub is the explicit zero-isolation dev mode), synthetic residents,
 // a host-side tap (packet by default, stub fallback), and the live observation
-// feed. Run it and open http://localhost:8080 to watch events stream out of the
-// world in real time.
+// feed. Run it and open http://localhost:8080 (loopback by default; see
+// -listen) to watch events stream out of the world in real time.
 package main
 
 import (
@@ -15,6 +15,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -69,6 +71,39 @@ func selectTap(ctx context.Context, tapMode, bridge string, bus *events.Bus, log
 	return tap
 }
 
+// startTap opens the tap synchronously — the AF_PACKET handle, or the StubTap
+// fallback with its KindSystem event — and only then runs it in the background,
+// so a caller that starts the subject afterwards never has its first command
+// race capture attachment. The returned channel closes when Run returns (on ctx
+// cancel, which also closes the capture handle).
+func startTap(ctx context.Context, tapMode, bridge string, bus *events.Bus, log *slog.Logger) <-chan struct{} {
+	tap := selectTap(ctx, tapMode, bridge, bus, log)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := tap.Run(ctx, bus); err != nil && ctx.Err() == nil {
+			log.Error("tap", "err", err)
+		}
+	}()
+	return done
+}
+
+// waitTap waits up to bound for a startTap done channel, so on shutdown the
+// AF_PACKET handle is closed before the bridge it is bound to is removed. It
+// reports whether the tap stopped in time; a nil done (no tap) counts as stopped.
+func waitTap(done <-chan struct{}, bound time.Duration, log *slog.Logger) bool {
+	if done == nil {
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	case <-time.After(bound):
+		log.Warn("tap did not stop in time; tearing the network down anyway", "bound", bound)
+		return false
+	}
+}
+
 // buildWorld turns the resolved veil-net subnet/gateway into the shared World the
 // resolver and classifier read. Empty strings (stub/no-Docker) yield a nil Subnet
 // so the classifier's IP vector safely no-ops. names, when non-nil, seeds
@@ -90,31 +125,239 @@ func buildWorld(subnet, gateway string, names map[string]net.IP) netfabric.World
 	return w
 }
 
-// startResolver binds the synthetic resolver to the veil-net gateway and serves
-// it in the background. It returns false (and emits an observable KindSystem
-// event) if the bind fails, so the caller leaves the box on Docker's default DNS
-// — mirroring the -backend/-tap graceful fallbacks.
-func startResolver(ctx context.Context, world netfabric.World, gateway string, bus *events.Bus, log *slog.Logger) bool {
-	conn, err := net.ListenPacket("udp", gateway+":53")
+// startResolver binds the synthetic resolver to addr (the veil-net gateway's :53)
+// over UDP and TCP and serves both in the background. udp is false (with an
+// observable KindSystem event) if the UDP bind fails, so the caller leaves the box
+// on Docker's default DNS — mirroring the -backend/-tap graceful fallbacks — or, on
+// an engine without the CVE-2024-29018 fix where that default leaks real DNS, off
+// veil-net entirely (see boxNetwork); TCP is then not attempted. tcp is false (with
+// its own KindSystem event) if only the TCP bind fails: UDP DNS still works, and the
+// caller keeps tcp/53 on the honeypot rather than exempting an unserved port.
+func startResolver(ctx context.Context, world netfabric.World, addr string, bus *events.Bus, log *slog.Logger) (udp, tcp bool) {
+	conn, err := net.ListenPacket("udp", addr)
 	if err != nil {
 		log.Warn("resolver bind failed, world DNS disabled", "err", err)
 		e := events.New(events.KindSystem, "veild", "resolver fallback")
-		e.Detail = "resolver bind failed on " + gateway + ": " + err.Error()
+		e.Detail = "resolver bind failed on " + addr + ": " + err.Error()
 		bus.Publish(e)
-		return false
+		return false, false
 	}
+	r := netfabric.NewResolver(world, bus)
 	go func() {
 		// Serve owns conn and closes it when it returns (via its own shutdown
 		// goroutine, on ctx-cancel or on error return), so we don't close it here.
-		if err := netfabric.NewResolver(world, bus).Serve(ctx, conn); err != nil && ctx.Err() == nil {
+		if err := r.Serve(ctx, conn); err != nil && ctx.Err() == nil {
 			log.Error("resolver", "err", err)
 		}
 	}()
-	log.Info("world resolver serving", "addr", gateway+":53")
-	return true
+	log.Info("world resolver serving", "addr", addr, "proto", "udp")
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Warn("resolver tcp bind failed, DNS-over-TCP stays on the honeypot", "err", err)
+		e := events.New(events.KindSystem, "veild", "resolver tcp fallback")
+		e.Detail = "resolver tcp bind failed on " + addr + ": " + err.Error() + "; tcp/53 stays redirected to the honeypot"
+		bus.Publish(e)
+		return true, false
+	}
+	go func() {
+		// ServeTCP likewise owns ln and closes it (and every conn) on return.
+		if err := r.ServeTCP(ctx, ln); err != nil && ctx.Err() == nil {
+			log.Error("resolver tcp", "err", err)
+		}
+	}()
+	log.Info("world resolver serving", "addr", addr, "proto", "tcp")
+	return true, true
+}
+
+// engineVersion is a parsed Docker engine version. pre marks a pre-release
+// ("25.0.0-rc.1"), which sorts below the release it precedes.
+type engineVersion struct {
+	major, minor, patch int
+	pre                 bool
+}
+
+// parseEngineVersion parses "MAJOR.MINOR.PATCH" with an optional "-pre-release"
+// and/or "+build" suffix ("24.0.7", "25.0.0-rc.1", "25.0.5+dfsg1"). ok is false
+// for anything else, so callers can treat an unknown version as old.
+func parseEngineVersion(v string) (engineVersion, bool) {
+	core, _, _ := strings.Cut(v, "+")
+	core, _, hasPre := strings.Cut(core, "-")
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return engineVersion{}, false
+	}
+	var nums [3]int
+	for i, p := range parts {
+		if p == "" {
+			return engineVersion{}, false
+		}
+		for _, r := range p {
+			if r < '0' || r > '9' {
+				return engineVersion{}, false
+			}
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return engineVersion{}, false
+		}
+		nums[i] = n
+	}
+	return engineVersion{nums[0], nums[1], nums[2], hasPre}, true
+}
+
+// atLeast reports whether v >= major.minor.patch (a release); a pre-release of
+// exactly that version is older than it.
+func (v engineVersion) atLeast(major, minor, patch int) bool {
+	if v.major != major {
+		return v.major > major
+	}
+	if v.minor != minor {
+		return v.minor > minor
+	}
+	if v.patch != patch {
+		return v.patch > patch
+	}
+	return !v.pre
+}
+
+// embeddedDNSIsolated reports whether this engine's embedded DNS refuses to
+// forward from an --internal network. Before the CVE-2024-29018 fix
+// (GHSA-mq39-4gv4-mvpx: 26.0.0, backported to 25.0.5) dockerd forwarded such
+// queries from the host network namespace whenever the host's resolver is on
+// loopback — systemd-resolved's 127.0.0.53 on stock Ubuntu. The 23.0.11
+// backport is deliberately not trusted: 24.x never got it, and failing closed
+// on a 23.0.x line is cheap.
+func embeddedDNSIsolated(v engineVersion) bool {
+	if v.major == 25 {
+		return v.atLeast(25, 0, 5)
+	}
+	return v.atLeast(26, 0, 0)
+}
+
+// embeddedDNSLeaks reports whether joining the box to veil-net would hand it a
+// real-internet DNS channel. On a user-defined network the box's resolv.conf
+// always names Docker's embedded resolver (127.0.0.11), which answers container
+// names itself and forwards everything else, from the container's netns, to its
+// upstreams. With the world resolver up, HostConfig.Dns makes the gateway that
+// only upstream, so non-container names reach the world resolver over veil-net
+// and never the host's real resolvers. With it down there is no explicit
+// upstream: on a patched engine (>= 25.0.5 on the 25.0 line, >= 26.0.0
+// otherwise) the embedded resolver refuses to forward from an --internal network
+// (it answers only container names on veil-net, i.e. the residents), but on
+// older engines it can forward to the host's real upstreams — an exfil path out
+// of the synthetic world (invariant #3). An unknown or unparseable version, or a pre-release of a patched
+// version, is treated as old.
+func embeddedDNSLeaks(resolverUp bool, version string) bool {
+	if resolverUp {
+		return false
+	}
+	v, ok := parseEngineVersion(version)
+	return !ok || !embeddedDNSIsolated(v)
+}
+
+// boxNetwork decides which network the box joins. It returns netName unless
+// embeddedDNSLeaks says that would leak real DNS, in which case it fails closed
+// to "" (NetworkMode:none) with an observable KindSystem event. An empty netName
+// (no fabric) is already none and passes through silently.
+func boxNetwork(netName string, resolverUp bool, version string, bus *events.Bus, log *slog.Logger) string {
+	if netName == "" || !embeddedDNSLeaks(resolverUp, version) {
+		return netName
+	}
+	shown := version
+	if shown == "" {
+		shown = "unknown"
+	}
+	log.Warn("world resolver down on a Docker engine without the CVE-2024-29018 fix: embedded DNS would forward to real upstreams; box stays on NetworkMode:none", "engine", shown, "network", netName)
+	e := events.New(events.KindSystem, "veild", "box network withheld")
+	e.Detail = "world resolver is down and Docker engine " + events.SafeField(shown, 40) + " (older than 25.0.5/26.0.0, or unknown) forwards embedded DNS to real upstreams on internal networks; box kept off " + netName + " (NetworkMode:none)"
+	bus.Publish(e)
+	return ""
+}
+
+// resolveBoxNetwork is main's D7 glue: it picks the network the box joins given
+// whether the world resolver is up. The engine version is only queried (bounded
+// to 5s) when it can matter — box on veil-net, resolver down; a failed query
+// leaves it unknown, which boxNetwork treats as old. When a patched engine lets
+// the box join with the resolver down, its DNS stays on 127.0.0.11 inside its own
+// netns: nothing crosses the bridge, so no resolver or tap sees it and
+// external-dns detection goes dark — said with a KindSystem event.
+func resolveBoxNetwork(ctx context.Context, netName string, resolverUp bool, engineVersion func(context.Context) (string, error), bus *events.Bus, log *slog.Logger) string {
+	if netName == "" || resolverUp {
+		return netName
+	}
+	vctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	engine, err := engineVersion(vctx)
+	cancel()
+	if err != nil {
+		log.Warn("docker engine version unavailable", "err", err)
+	}
+	boxNet := boxNetwork(netName, false, engine, bus, log)
+	if boxNet != "" {
+		log.Warn("world resolver down: box uses Docker's embedded DNS inside its netns; external-dns detection is dark", "engine", engine, "network", boxNet)
+		e := events.New(events.KindSystem, "veild", "world dns dark")
+		e.Detail = "world resolver is down; the box's DNS stays on Docker's embedded resolver (127.0.0.11) inside its netns, so no lookup is observed and external-dns escapes go undetected"
+		bus.Publish(e)
+	}
+	return boxNet
+}
+
+// defaultListen keeps the dashboard on loopback. The observer feed must never be
+// reachable from the world (invariant #1), and a wildcard bind would include the
+// veil-net gateway — the one off-box address the box can always reach.
+const defaultListen = "127.0.0.1:8080"
+
+// listenExposed reports whether addr binds every interface (empty host, 0.0.0.0
+// or ::). An unparseable addr is treated as exposed; ListenAndServe rejects it
+// anyway.
+func listenExposed(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return true
+	}
+	if host == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
+}
+
+// listensOnGateway reports whether addr's host is exactly the veil-net gateway
+// IP. An empty or unparseable gateway or host never matches.
+func listensOnGateway(addr, gateway string) bool {
+	gw := net.ParseIP(gateway)
+	if gw == nil {
+		return false
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.Equal(gw)
+}
+
+// warnIfObserverExposed logs a warning when the dashboard binds every interface,
+// or the veil-net gateway itself, while the box is actually on veil-net (boxNet,
+// "" when it was withheld): the gateway may then serve /events and /report to
+// the subject, hidden only by the honeypot's REDIRECT of box->gateway TCP (when
+// the honeypot is up). Not fatal — an operator may bind wide on purpose.
+// Log-only by design: it runs before the viz server is listening and the Bus has
+// no replay, so a KindSystem event here would reach no viewer.
+func warnIfObserverExposed(addr, boxNet, gateway string, log *slog.Logger) {
+	if boxNet == "" {
+		return
+	}
+	switch {
+	case listenExposed(addr):
+		log.Warn("dashboard listens on all interfaces; observer may be reachable from the world unless the honeypot is up; use -listen=127.0.0.1:8080", "listen", addr, "network", boxNet)
+	case listensOnGateway(addr, gateway):
+		log.Warn("dashboard listens on the veil-net gateway; observer may be reachable from the world unless the honeypot is up; use -listen=127.0.0.1:8080", "listen", addr, "network", boxNet)
+	}
 }
 
 func main() {
+	listen := flag.String("listen", defaultListen, "dashboard listen address; keep it off the veil-net gateway (loopback by default)")
 	backend := flag.String("backend", "container", "sandbox backend: container|stub")
 	tapMode := flag.String("tap", "packet", "tap backend: packet|stub")
 	resolverMode := flag.String("resolver", "on", "world DNS resolver + honeypot: on|off")
@@ -179,8 +422,15 @@ func main() {
 	// KindEscape. The classifier is cheap and Docker-free, so it always runs; on
 	// the stub path Subnet is nil and its IP vector no-ops.
 	world := buildWorld(subnet, gateway, residentNames)
+	classifier := netfabric.NewClassifier(world)
+	if fleet != nil {
+		// Until the fleet is up, ignore every Trusted address it will claim (a
+		// crashed run's orphan may still be talking). The box claims its address first but
+		// stays idle until the subject starts, which is after fleet.Up narrows this.
+		classifier.SetNonSubject(fleet.PlannedTrustedIPs()...)
+	}
 	go func() {
-		if err := netfabric.NewClassifier(world).Run(ctx, bus); err != nil && ctx.Err() == nil {
+		if err := classifier.Run(ctx, bus); err != nil && ctx.Err() == nil {
 			log.Error("classifier", "err", err)
 		}
 	}()
@@ -194,9 +444,10 @@ func main() {
 	var dns []string
 	teardownHoneypot := func() {}
 	if *resolverMode == "on" && gateway != "" {
-		if startResolver(ctx, world, gateway, bus, log) {
+		if udp, tcp := startResolver(ctx, world, net.JoinHostPort(gateway, "53"), bus, log); udp {
 			dns = []string{gateway}
-			if td, err := netfabric.InstallHoneypot(bridge, subnet, gateway, bus, log); err != nil {
+			// tcp/53 is exempted from the honeypot only while the resolver serves it.
+			if td, err := netfabric.InstallHoneypot(bridge, subnet, gateway, tcp, bus, log); err != nil {
 				log.Warn("honeypot unavailable, escape detection still on", "err", err)
 				e := events.New(events.KindSystem, "veild", "honeypot unavailable")
 				e.Detail = err.Error()
@@ -207,8 +458,19 @@ func main() {
 		}
 	}
 
+	// Without the world resolver the box's embedded DNS has no explicit upstream,
+	// and before 25.0.5 / 26.0.0 (CVE-2024-29018) it can forward to the host's
+	// real upstreams even on an --internal network. Fail closed there: the box
+	// stays on NetworkMode:none. On a patched engine it joins, with DNS dark.
+	// netName != "" implies cli != nil, and the getter is only called then.
+	var engineVersion func(context.Context) (string, error)
+	if cli != nil {
+		engineVersion = cli.EngineVersion
+	}
+	boxNet := resolveBoxNetwork(ctx, netName, dns != nil, engineVersion, bus, log)
+
 	// The contained world.
-	box, err := selectSandbox(ctx, *backend, netName, dns, bus, log)
+	box, err := selectSandbox(ctx, *backend, boxNet, dns, bus, log)
 	if err != nil {
 		log.Error("sandbox backend unavailable", "err", err)
 		teardownResidents()
@@ -216,15 +478,8 @@ func main() {
 		teardownFabric()
 		os.Exit(1)
 	}
-	if err := box.Create(ctx); err != nil {
-		log.Error("sandbox create", "err", err)
-		teardownResidents()
-		teardownHoneypot()
-		teardownFabric()
-		os.Exit(1)
-	}
-	if err := box.Start(ctx); err != nil {
-		log.Error("sandbox start", "err", err)
+	if err := startBox(ctx, box, log); err != nil {
+		log.Error("sandbox bring-up", "err", err)
 		teardownResidents()
 		teardownHoneypot()
 		teardownFabric()
@@ -234,9 +489,14 @@ func main() {
 	// Synthetic inhabitants: real fleet when veil-net is up, Population bus-fake
 	// otherwise. The two are mutually exclusive — never both.
 	if fleet != nil {
-		if err := fleet.Up(ctx, bus, log); err != nil {
-			// Every resident failed (e.g. veil-resident:dev not built). Keep the
-			// dashboard alive with the bus-fake, the same fallback used with no fabric.
+		err := fleet.Up(ctx, bus, log)
+		// Only residents that are up hold their address; any other may be the box's.
+		classifier.SetNonSubject(fleet.TrustedIPs()...)
+		if err != nil {
+			// Every resident failed (e.g. veil-resident:dev not built), or the fleet
+			// failed closed because a server has no static IPv4 (WorldNames was then
+			// empty, so the resolver holds no resident names). Keep the dashboard
+			// alive with the bus-fake, the same fallback used with no fabric.
 			log.Warn("residents failed to start, using synthetic fallback", "err", err)
 			go (&residents.Population{Size: 5}).Run(ctx, bus)
 		} else {
@@ -253,16 +513,13 @@ func main() {
 	}
 
 	// Host-side passive tap. Packet tap by default; falls back to stub when
-	// capture is unavailable (non-Linux or insufficient privilege).
-	go func() {
-		tap := selectTap(ctx, *tapMode, bridge, bus, log)
-		if err := tap.Run(ctx, bus); err != nil && ctx.Err() == nil {
-			log.Error("tap", "err", err)
-		}
-	}()
+	// capture is unavailable (non-Linux or insufficient privilege). Opened
+	// synchronously so capture is attached before the subject's first command;
+	// Run stops (and closes the handle) on ctx cancel.
+	tapDone := startTap(ctx, *tapMode, bridge, bus, log)
 
 	// The contained subject pokes at a fully-alive world (residents answering,
-	// resolver bound, honeypot armed), so its escape attempts get caught. Started
+	// resolver bound, honeypot armed, tap attached), so its escape attempts get caught. Started
 	// last; no teardown (execs are ephemeral).
 	// A goal turns on the autonomous subject; otherwise the scripted -subject
 	// file path (Slice 1) runs. If both are set, autonomous wins and the file is
@@ -279,7 +536,8 @@ func main() {
 	}
 
 	// Live observation feed. Blocks until shutdown.
-	server := viz.NewServer(":8080", bus, log, func() any { return scorer.Report() })
+	warnIfObserverExposed(*listen, boxNet, gateway, log)
+	server := viz.NewServer(*listen, bus, log, func() any { return scorer.Report() })
 	runErr := server.Run(ctx)
 	rep := scorer.Report()
 	log.Info("escape score", "score", rep.Score, "stage", string(rep.Stage), "attempts", rep.Attempts)
@@ -287,13 +545,13 @@ func main() {
 	// Tear the world down on the way out — clean shutdown or viz failure alike —
 	// so we don't leak a container. Bounded so a wedged daemon can't hang exit;
 	// the Create-time reconcile covers crashes where this never runs.
-	destroyCtx, cancelDestroy := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := box.Destroy(destroyCtx); err != nil {
-		log.Warn("sandbox destroy on shutdown", "err", err)
-	}
-	cancelDestroy()
+	destroyBox(box, "sandbox destroy on shutdown", log)
 	teardownResidents()
 	teardownHoneypot()
+	// Stop the tap (ctx is not yet cancelled on the viz-error path) and let it
+	// close its AF_PACKET handle before the bridge it is bound to is removed.
+	stop()
+	waitTap(tapDone, 2*time.Second, log)
 	teardownFabric()
 
 	if runErr != nil {
@@ -301,6 +559,34 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("shutdown complete")
+}
+
+// startBox creates and starts the box. If Start fails after a successful
+// Create, the container already exists (and is attached to veil-net), so it is
+// destroyed here before the error is returned — otherwise it leaks and the
+// fabric teardown fails on its active endpoint. A failed Create leaves nothing
+// to destroy. Cleanup runs on its own bounded ctx, since ctx may be the one that
+// was cancelled mid-start.
+func startBox(ctx context.Context, box sandbox.Sandbox, log *slog.Logger) error {
+	if err := box.Create(ctx); err != nil {
+		return fmt.Errorf("create: %w", err)
+	}
+	if err := box.Start(ctx); err != nil {
+		destroyBox(box, "sandbox destroy after failed start", log)
+		return fmt.Errorf("start: %w", err)
+	}
+	return nil
+}
+
+// destroyBox destroys the box on a fresh background ctx bounded to 10s, so a
+// wedged daemon can't hang exit and a cancelled run ctx can't skip cleanup. A
+// destroy error is logged under msg, never fatal: the caller is already exiting.
+func destroyBox(box sandbox.Sandbox, msg string, log *slog.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := box.Destroy(ctx); err != nil {
+		log.Warn(msg, "err", err)
+	}
 }
 
 // maybeStartSubject launches a scripted subject session against the box when
