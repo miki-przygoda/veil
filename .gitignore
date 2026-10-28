@@ -34,3 +34,9 @@ go.work.sum
 /docs/superpowers
 /docs/VALIDATION.md
 .DS_Store
+
+# Local tool state and run output
+.claude/
+.superpowers/
+/bin/
+/logs/
